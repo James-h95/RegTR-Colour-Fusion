@@ -10,13 +10,28 @@ from models.generic_reg_model import GenericRegModel
 from models.losses.corr_loss import CorrCriterion
 from models.losses.feature_loss import InfoNCELossFull, CircleLossFull
 from models.transformer.position_embedding import PositionEmbeddingCoordsSine, \
-    PositionEmbeddingLearned
+    PositionEmbeddingLearned, GeometricStructureEmbedding
 from models.transformer.transformers import \
     TransformerCrossEncoderLayer, TransformerCrossEncoder
 from utils.se3_torch import compute_rigid_transform, se3_transform_list, se3_inv
 from utils.seq_manipulation import split_src_tgt, pad_sequence, unpad_sequences
 from utils.viz import visualize_registration
 _TIMEIT = False
+
+
+def _pack_sa_bias(bias_list):
+    """Pad a list of per-sample (num_heads, N_i, N_i) biases into a single
+    (B*num_heads, N_max, N_max) tensor for nn.MultiheadAttention's attn_mask."""
+    if len(bias_list) == 0:
+        return None
+    H = bias_list[0].shape[0]
+    N_max = max(b.shape[-1] for b in bias_list)
+    device, dtype = bias_list[0].device, bias_list[0].dtype
+    padded = torch.zeros(len(bias_list), H, N_max, N_max, device=device, dtype=dtype)
+    for i, b in enumerate(bias_list):
+        n = b.shape[-1]
+        padded[i, :, :n, :n] = b
+    return padded.reshape(len(bias_list) * H, N_max, N_max)
 
 
 class RegTR(GenericRegModel):
@@ -45,6 +60,20 @@ class RegTR(GenericRegModel):
             self.pos_embed = PositionEmbeddingLearned(3, cfg.d_embed)
         else:
             raise NotImplementedError
+
+        # Optional GeoTransformer-style relational encoding for self-attention.
+        # When enabled it is added as a per-pair bias to the transformer's
+        # self-attention; the absolute pos_embed above is still used for the
+        # correspondence decoder (and optionally the cross-attention values).
+        self.use_relational_pos_emb = cfg.get('use_relational_pos_emb', False)
+        if self.use_relational_pos_emb:
+            self.geo_embed = GeometricStructureEmbedding(
+                hidden_dim=cfg.get('relational_hidden_dim', 128),
+                num_heads=cfg.nhead,
+                sigma_d=cfg.get('relational_sigma_d', 0.2),
+                sigma_a=cfg.get('relational_sigma_a', 15.0),
+                angle_k=cfg.get('relational_angle_k', 3),
+            )
 
         #######################
         # Attention propagation
@@ -151,6 +180,12 @@ class RegTR(GenericRegModel):
         src_pe_padded, _, _ = pad_sequence(src_pe)
         tgt_pe_padded, _, _ = pad_sequence(tgt_pe)
 
+        # Optional relational (GeoTransformer-style) self-attention bias
+        src_sa_bias = tgt_sa_bias = None
+        if self.use_relational_pos_emb:
+            src_sa_bias = _pack_sa_bias(self.geo_embed(src_xyz_c))
+            tgt_sa_bias = _pack_sa_bias(self.geo_embed(tgt_xyz_c))
+
         # Performs padding, then apply attention (REGTR "encoder" stage) to condition on the other
         # point cloud
         src_feats_padded, src_key_padding_mask, _ = pad_sequence(src_feats_un,
@@ -163,6 +198,8 @@ class RegTR(GenericRegModel):
             tgt_key_padding_mask=tgt_key_padding_mask,
             src_pos=src_pe_padded if self.cfg.transformer_encoder_has_pos_emb else None,
             tgt_pos=tgt_pe_padded if self.cfg.transformer_encoder_has_pos_emb else None,
+            src_sa_attn_bias=src_sa_bias,
+            tgt_sa_attn_bias=tgt_sa_bias,
         )
 
         src_corr_list, tgt_corr_list, src_overlap_list, tgt_overlap_list = \

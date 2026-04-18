@@ -30,7 +30,9 @@ class TransformerCrossEncoder(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None,
                 src_pos: Optional[Tensor] = None,
-                tgt_pos: Optional[Tensor] = None,):
+                tgt_pos: Optional[Tensor] = None,
+                src_sa_attn_bias: Optional[Tensor] = None,
+                tgt_sa_attn_bias: Optional[Tensor] = None,):
 
         src_intermediate, tgt_intermediate = [], []
 
@@ -38,7 +40,9 @@ class TransformerCrossEncoder(nn.Module):
             src, tgt = layer(src, tgt, src_mask=src_mask, tgt_mask=tgt_mask,
                              src_key_padding_mask=src_key_padding_mask,
                              tgt_key_padding_mask=tgt_key_padding_mask,
-                             src_pos=src_pos, tgt_pos=tgt_pos)
+                             src_pos=src_pos, tgt_pos=tgt_pos,
+                             src_sa_attn_bias=src_sa_attn_bias,
+                             tgt_sa_attn_bias=tgt_sa_attn_bias)
             if self.return_intermediate:
                 src_intermediate.append(self.norm(src) if self.norm is not None else src)
                 tgt_intermediate.append(self.norm(tgt) if self.norm is not None else tgt)
@@ -124,7 +128,9 @@ class TransformerCrossEncoderLayer(nn.Module):
                      src_key_padding_mask: Optional[Tensor] = None,
                      tgt_key_padding_mask: Optional[Tensor] = None,
                      src_pos: Optional[Tensor] = None,
-                     tgt_pos: Optional[Tensor] = None,):
+                     tgt_pos: Optional[Tensor] = None,
+                     src_sa_attn_bias: Optional[Tensor] = None,
+                     tgt_sa_attn_bias: Optional[Tensor] = None,):
 
         assert src_mask is None and tgt_mask is None, 'Masking not implemented'
 
@@ -133,7 +139,7 @@ class TransformerCrossEncoderLayer(nn.Module):
         q = k = src_w_pos
         src2, satt_weights_s = self.self_attn(q, k,
                               value=src_w_pos if self.sa_val_has_pos_emb else src,
-                              attn_mask=src_mask,
+                              attn_mask=src_sa_attn_bias if src_sa_attn_bias is not None else src_mask,
                               key_padding_mask=src_key_padding_mask)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
@@ -142,7 +148,7 @@ class TransformerCrossEncoderLayer(nn.Module):
         q = k = tgt_w_pos
         tgt2, satt_weights_t = self.self_attn(q, k,
                                               value=tgt_w_pos if self.sa_val_has_pos_emb else tgt,
-                                              attn_mask=tgt_mask,
+                                              attn_mask=tgt_sa_attn_bias if tgt_sa_attn_bias is not None else tgt_mask,
                                               key_padding_mask=tgt_key_padding_mask)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
@@ -186,7 +192,9 @@ class TransformerCrossEncoderLayer(nn.Module):
                     src_key_padding_mask: Optional[Tensor] = None,
                     tgt_key_padding_mask: Optional[Tensor] = None,
                     src_pos: Optional[Tensor] = None,
-                    tgt_pos: Optional[Tensor] = None,):
+                    tgt_pos: Optional[Tensor] = None,
+                    src_sa_attn_bias: Optional[Tensor] = None,
+                    tgt_sa_attn_bias: Optional[Tensor] = None,):
 
         assert src_mask is None and tgt_mask is None, 'Masking not implemented'
 
@@ -196,7 +204,7 @@ class TransformerCrossEncoderLayer(nn.Module):
         q = k = src2_w_pos
         src2, satt_weights_s = self.self_attn(q, k,
                                               value=src2_w_pos if self.sa_val_has_pos_emb else src2,
-                                              attn_mask=src_mask,
+                                              attn_mask=src_sa_attn_bias if src_sa_attn_bias is not None else src_mask,
                                               key_padding_mask=src_key_padding_mask)
         src = src + self.dropout1(src2)
 
@@ -205,7 +213,7 @@ class TransformerCrossEncoderLayer(nn.Module):
         q = k = tgt2_w_pos
         tgt2, satt_weights_t = self.self_attn(q, k,
                                               value=tgt2_w_pos if self.sa_val_has_pos_emb else tgt2,
-                                              attn_mask=tgt_mask,
+                                              attn_mask=tgt_sa_attn_bias if tgt_sa_attn_bias is not None else tgt_mask,
                                               key_padding_mask=tgt_key_padding_mask)
         tgt = tgt + self.dropout1(tgt2)
 
@@ -249,13 +257,19 @@ class TransformerCrossEncoderLayer(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None,
                 src_pos: Optional[Tensor] = None,
-                tgt_pos: Optional[Tensor] = None,):
+                tgt_pos: Optional[Tensor] = None,
+                src_sa_attn_bias: Optional[Tensor] = None,
+                tgt_sa_attn_bias: Optional[Tensor] = None,):
 
         if self.normalize_before:
             return self.forward_pre(src, tgt, src_mask, tgt_mask,
-                                    src_key_padding_mask, tgt_key_padding_mask, src_pos, tgt_pos)
+                                    src_key_padding_mask, tgt_key_padding_mask,
+                                    src_pos, tgt_pos,
+                                    src_sa_attn_bias, tgt_sa_attn_bias)
         return self.forward_post(src, tgt, src_mask, tgt_mask,
-                                 src_key_padding_mask, tgt_key_padding_mask, src_pos, tgt_pos)
+                                 src_key_padding_mask, tgt_key_padding_mask,
+                                 src_pos, tgt_pos,
+                                 src_sa_attn_bias, tgt_sa_attn_bias)
 
 
 def _get_clones(module, N):

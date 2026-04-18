@@ -12,7 +12,8 @@ from utils.misc import load_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--benchmark', type=str, help='Benchmark dataset', default='3DMatch',
-                    choices=['3DMatch', '3DLoMatch', 'ModelNet', 'ModelLoNet'])
+                    choices=['3DMatch', '3DLoMatch', 'Color3DMatch', 'Color3DLoMatch',
+                             'ModelNet', 'ModelLoNet'])
 # General
 parser.add_argument('--config', type=str, help='Path to the config file.')
 # Logging
@@ -56,8 +57,9 @@ cfg = EasyDict(load_config(opt.config))
 def main():
 
     if cfg.dataset == '3dmatch':
-        assert opt.benchmark in ['3DMatch', '3DLoMatch'], \
-            "Benchmark for 3dmatch dataset must be one of ['3DMatch', '3DLoMatch']"
+        assert opt.benchmark in ['3DMatch', '3DLoMatch', 'Color3DMatch', 'Color3DLoMatch'], \
+            "Benchmark for 3dmatch dataset must be one of " \
+            "['3DMatch', '3DLoMatch', 'Color3DMatch', 'Color3DLoMatch']"
         cfg.benchmark = opt.benchmark
     elif cfg.dataset == 'modelnet':
         assert opt.benchmark in ['ModelNet', 'ModelLoNet'], \

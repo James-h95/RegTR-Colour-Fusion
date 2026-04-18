@@ -3,7 +3,6 @@
 
 from typing import List
 
-import MinkowskiEngine as ME
 import numpy as np
 import torch.nn
 import torch.nn.functional as F
@@ -212,31 +211,45 @@ def batch_grid_subsampling_kpconv(points, batches_len, features=None, labels=Non
 
 def batch_grid_subsampling_kpconv_gpu(points, batches_len, features=None, labels=None, sampleDl=0.1, max_p=0):
     """
-    Same as batch_grid_subsampling, but implemented in GPU. This is a hack by using Minkowski
-    engine's sparse quantization functions
-    Note: This function is not deterministic and may return subsampled points
-      in a different ordering, which will cause the subsequent steps to differ slightly.
+    GPU grid subsampling using pure PyTorch — no MinkowskiEngine required.
+    For each voxel of size sampleDl, returns the centroid of all points that fall in it.
+    Functionally equivalent to ME.SparseTensorQuantizationMode.UNWEIGHTED_AVERAGE.
     """
-
     if labels is not None or features is not None:
         raise NotImplementedError('subsampling not implemented for features and labels')
     if max_p != 0:
         raise NotImplementedError('subsampling only implemented by considering all points')
 
     B = len(batches_len)
+    device = points.device
     batch_start_end = torch.nn.functional.pad(torch.cumsum(batches_len, 0), (1, 0))
-    device = points[0].device
 
-    coord_batched = ME.utils.batched_coordinates(
-        [points[batch_start_end[b]:batch_start_end[b + 1]] / sampleDl for b in range(B)], device=device)
-    sparse_tensor = ME.SparseTensor(
-        features=points,
-        coordinates=coord_batched,
-        quantization_mode=ME.SparseTensorQuantizationMode.UNWEIGHTED_AVERAGE
-    )
+    s_points_list = []
+    s_len_list = []
 
-    s_points = sparse_tensor.features
-    s_len = torch.tensor([f.shape[0] for f in sparse_tensor.decomposed_features], device=device)
+    for b in range(B):
+        pts_b = points[batch_start_end[b]:batch_start_end[b + 1]]  # (N_b, 3)
+
+        # Discretise each point to its voxel index
+        voxel_coords = torch.floor(pts_b / sampleDl).long()  # (N_b, 3)
+
+        # Find unique voxels and which voxel each point belongs to
+        _, inverse_indices = torch.unique(voxel_coords, dim=0, return_inverse=True)
+
+        # Compute centroid of each voxel via scatter_add
+        n_voxels = int(inverse_indices.max().item()) + 1
+        s_pts = torch.zeros(n_voxels, 3, device=device, dtype=pts_b.dtype)
+        counts = torch.zeros(n_voxels, device=device, dtype=pts_b.dtype)
+        s_pts.scatter_add_(0, inverse_indices.unsqueeze(1).expand_as(pts_b), pts_b)
+        counts.scatter_add_(0, inverse_indices,
+                            torch.ones(pts_b.shape[0], device=device, dtype=pts_b.dtype))
+        s_pts = s_pts / counts.unsqueeze(1)
+
+        s_points_list.append(s_pts)
+        s_len_list.append(s_pts.shape[0])
+
+    s_points = torch.cat(s_points_list, dim=0)
+    s_len = torch.tensor(s_len_list, device=device, dtype=batches_len.dtype)
     return s_points, s_len
 
 

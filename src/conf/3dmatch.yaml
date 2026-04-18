@@ -74,6 +74,17 @@ model:
     ca_val_has_pos_emb: True
     pos_emb_type: sine  # either 'sine' or 'learned'
 
+    # Relational (GeoTransformer-style) self-attention bias.
+    # When enabled, a per-pair bias built from pairwise distances + triplet
+    # angles is added to self-attention scores — invariant to rigid transforms.
+    # Recommended: set transformer_encoder_has_pos_emb: False when this is on
+    # so absolute sine pos embeddings don't leak rotation-sensitive signal.
+    use_relational_pos_emb: False
+    relational_hidden_dim: 128
+    relational_sigma_d: 0.2
+    relational_sigma_a: 15.0
+    relational_angle_k: 3
+
     # Correspondence decoding
     corr_decoder_has_pos_emb: True
     direct_regress_coor: True  # Whether to regress coordinates using MLP (True) or a final attention layer (False)

@@ -13,8 +13,12 @@ from benchmark.benchmark_3dmatch import benchmark_dgr
 parser = argparse.ArgumentParser()
 parser.add_argument('--results_dir', type=str, default='../logdev',
                     help='Path to results (estimated transforms)')
-parser.add_argument('--benchmark', choices=['3DMatch', '3DLoMatch'],
-                    default='3DMatch')
+parser.add_argument('--benchmark',
+                    choices=['3DMatch', '3DLoMatch', 'Color3DMatch', 'Color3DLoMatch'],
+                    default='3DMatch',
+                    help='Color3DMatch/Color3DLoMatch use the same scene pairs as their '
+                         'uncoloured counterparts but paired with the ColorPCR-released '
+                         'coloured fragments.')
 parser.add_argument('--use_dgr', action='store_true',
                     help='If set, will evaluate using DGR success metrics (<15deg, 30cm)')
 opt = parser.parse_args()

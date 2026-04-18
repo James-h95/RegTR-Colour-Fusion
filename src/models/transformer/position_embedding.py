@@ -4,6 +4,96 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class SinusoidalScalarEmbedding(nn.Module):
+    """Sinusoidal embedding for a scalar (e.g. pairwise distance / angle)."""
+
+    def __init__(self, d_model: int, temperature: float = 10000.0):
+        super().__init__()
+        assert d_model % 2 == 0, 'd_model must be even'
+        self.d_model = d_model
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float32) *
+            (-math.log(temperature) / d_model)
+        )
+        self.register_buffer('div_term', div_term)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.unsqueeze(-1) * self.div_term  # (..., d_model/2)
+        emb = torch.stack([x.sin(), x.cos()], dim=-1).flatten(-2)
+        return emb
+
+
+class GeometricStructureEmbedding(nn.Module):
+    """GeoTransformer-style relational positional encoding.
+
+    Produces a per-pair additive bias for self-attention that is invariant to
+    rigid transforms of the input point cloud. Built from:
+      * Pairwise distance embeddings (PDE).
+      * Triplet-angle embeddings (TAE) aggregated over the k-nearest
+        neighbours of each anchor.
+
+    forward(points_list) returns a list of tensors shaped (num_heads, N_i, N_i)
+    — one per sample — suitable for being stacked/padded into an attn_mask for
+    nn.MultiheadAttention.
+    """
+
+    def __init__(self, hidden_dim: int, num_heads: int,
+                 sigma_d: float = 0.2, sigma_a: float = 15.0,
+                 angle_k: int = 3, reduction: str = 'max'):
+        super().__init__()
+        assert reduction in ('max', 'mean')
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.sigma_d = sigma_d
+        self.factor_a = 180.0 / (sigma_a * math.pi)  # maps radians → ~O(1)
+        self.angle_k = angle_k
+        self.reduction = reduction
+
+        self.embedding = SinusoidalScalarEmbedding(hidden_dim)
+        self.proj_d = nn.Linear(hidden_dim, hidden_dim)
+        self.proj_a = nn.Linear(hidden_dim, hidden_dim)
+        self.proj_bias = nn.Linear(hidden_dim, num_heads)
+
+    @torch.no_grad()
+    def _distances_and_angles(self, points: torch.Tensor):
+        # points: (N, 3)
+        N = points.shape[0]
+        diff = points.unsqueeze(0) - points.unsqueeze(1)  # (N, N, 3): v[i,j] = p_j - p_i
+        dists = diff.norm(dim=-1)  # (N, N)
+
+        k = min(self.angle_k + 1, N)
+        knn_idx = dists.topk(k=k, largest=False, dim=-1).indices[..., 1:]  # (N, K) excl. self
+        K = knn_idx.shape[-1]
+        if K == 0:
+            angles = torch.zeros(N, N, 1, device=points.device, dtype=points.dtype)
+        else:
+            neighbor_pts = points[knn_idx]  # (N, K, 3)
+            v_ix = neighbor_pts - points.unsqueeze(1)  # (N, K, 3)
+            v_ij = diff  # (N, N, 3)
+            v_ij_n = F.normalize(v_ij, dim=-1).unsqueeze(2)  # (N, N, 1, 3)
+            v_ix_n = F.normalize(v_ix, dim=-1).unsqueeze(1)  # (N, 1, K, 3)
+            cos = (v_ij_n * v_ix_n).sum(-1).clamp(-1 + 1e-7, 1 - 1e-7)  # (N, N, K)
+            angles = torch.acos(cos)
+            angles = torch.nan_to_num(angles, nan=0.0)
+        return dists, angles
+
+    def _embed_pair(self, points: torch.Tensor) -> torch.Tensor:
+        dists, angles = self._distances_and_angles(points)  # (N,N), (N,N,K)
+        d_emb = self.proj_d(self.embedding(dists / self.sigma_d))  # (N, N, H)
+        a_emb = self.proj_a(self.embedding(angles * self.factor_a))  # (N, N, K, H)
+        if self.reduction == 'max':
+            a_emb = a_emb.max(dim=-2).values
+        else:
+            a_emb = a_emb.mean(dim=-2)
+        pair_emb = d_emb + a_emb  # (N, N, H)
+        bias = self.proj_bias(pair_emb)  # (N, N, num_heads)
+        return bias.permute(2, 0, 1).contiguous()  # (num_heads, N, N)
+
+    def forward(self, points_list):
+        """points_list: list of (N_i, 3) — one per batch sample."""
+        return [self._embed_pair(p) for p in points_list]
+
+
 class PositionEmbeddingCoordsSine(nn.Module):
     """Similar to transformer's position encoding, but generalizes it to
     arbitrary dimensions and continuous coordinates.
