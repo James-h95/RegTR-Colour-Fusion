@@ -61,6 +61,17 @@ class RegTR(GenericRegModel):
         else:
             raise NotImplementedError
 
+        # Colour fusion (Task 1, CEFE-1). When enabled, feats0 is the per-point
+        # RGB (3 channels) instead of ones, so in_feats_dim must be 3.
+        # load_config flattens kpconv_options into cfg, so in_feats_dim is
+        # accessed at the top level.
+        self.use_color = bool(cfg.get('use_color', False))
+        if self.use_color:
+            assert cfg.in_feats_dim == 3, (
+                f'use_color=True requires kpconv_options.in_feats_dim: 3 in the '
+                f'config, got {cfg.in_feats_dim}.'
+            )
+
         # Optional GeoTransformer-style relational encoding for self-attention.
         # When enabled it is added as a per-pair bias to the transformer's
         # self-attention; the absolute pos_embed above is still used for the
@@ -148,7 +159,23 @@ class RegTR(GenericRegModel):
         slens = [s.tolist() for s in kpconv_meta['stack_lengths']]
         slens_c = slens[-1]
         src_slens_c, tgt_slens_c = slens_c[:B], slens_c[B:]
-        feats0 = torch.ones_like(kpconv_meta['points'][0][:, 0:1])
+
+        # Initial features for the KPConv encoder.
+        # Baseline REGTR: geometry-blind ones (in_feats_dim=1).
+        # Task 1 (CEFE-1): per-point RGB injected as initial features. We follow
+        # the preprocessor's src-then-tgt stacking order so feats line up with
+        # kpconv_meta['points'][0].
+        pts0 = kpconv_meta['points'][0]
+        if self.use_color and 'src_rgb' in batch and 'tgt_rgb' in batch:
+            rgb_stacked = torch.cat(
+                [r.to(pts0.device) for r in batch['src_rgb'] + batch['tgt_rgb']],
+                dim=0,
+            )
+            assert rgb_stacked.shape[0] == pts0.shape[0], \
+                f'RGB/point count mismatch: {rgb_stacked.shape[0]} vs {pts0.shape[0]}'
+            feats0 = rgb_stacked
+        else:
+            feats0 = torch.ones_like(pts0[:, 0:1])
 
         if _TIMEIT:
             t_end_pp_cuda.record()

@@ -10,6 +10,13 @@ dataset:
     val_batch_size: 2
     test_batch_size: 1
     overlap_radius: 0.0375  # Distance below which points will be considered to be overlapping
+    # Task 1 (CEFE-1) colour fusion. When True, the dataloader emits per-point
+    # RGB which RegTR uses as the initial KPConv features. Set in_feats_dim: 3
+    # to match. color_source: 'auto' (split from (N,6) .pt files), 'random'
+    # (synthetic — lets you sanity-check the colour pathway before Color3DMatch
+    # data arrives), or 'zeros'.
+    use_color: False
+    color_source: auto
 
 train_options:
     niter: -70  # Actually just need 40-50 epochs.

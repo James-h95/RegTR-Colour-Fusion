@@ -61,8 +61,54 @@ class ThreeDMatchDataset(Dataset):
         self.transforms = transforms
         self.phase = phase
 
+        # Colour fusion (Task 1, CEFE). When cfg.use_color is True we try to
+        # obtain a per-point RGB tensor; the model consumes it as the initial
+        # KPConv features instead of the geometry-blind ones.
+        self.use_color = bool(cfg.get('use_color', False))
+        # 'auto'    : split from the xyz file if it's (N,6), else zeros
+        # 'random'  : synthesise random RGB (for architecture sanity / pretraining
+        #             the colour pathway when Color3DMatch isn't available yet)
+        # 'zeros'   : always zeros (equivalent to ones but matches RGB dim)
+        self.color_source = cfg.get('color_source', 'auto')
+
     def __len__(self):
         return len(self.infos['rot'])
+
+    def _split_xyz_rgb(self, raw, n_points_hint=None):
+        """Given a raw loaded point payload return (xyz[N,3], rgb[N,3] or None).
+
+        Supports:
+          * numpy/tensor of shape (N, 3)               -> xyz only
+          * numpy/tensor of shape (N, 6)               -> xyz + rgb (rgb scaled
+                                                         to [0,1] if it looks
+                                                         like 0-255)
+          * dict with keys {'xyz', 'rgb'}              -> explicit colour
+        """
+        if isinstance(raw, dict):
+            xyz = np.asarray(raw['xyz'])
+            rgb = np.asarray(raw['rgb']) if 'rgb' in raw else None
+        else:
+            arr = np.asarray(raw)
+            if arr.ndim == 2 and arr.shape[1] >= 6:
+                xyz, rgb = arr[:, :3], arr[:, 3:6]
+            else:
+                xyz, rgb = arr, None
+        if rgb is not None:
+            rgb = rgb.astype(np.float32)
+            if rgb.max() > 1.5:  # heuristic: stored as 0-255
+                rgb = rgb / 255.0
+            rgb = np.clip(rgb, 0.0, 1.0)
+        return xyz, rgb
+
+    def _make_rgb(self, N, loaded_rgb):
+        """Resolve the RGB tensor per the configured color_source policy."""
+        if not self.use_color:
+            return None
+        if self.color_source == 'random':
+            return np.random.rand(N, 3).astype(np.float32)
+        if self.color_source == 'zeros' or loaded_rgb is None:
+            return np.zeros((N, 3), dtype=np.float32)
+        return loaded_rgb.astype(np.float32)
 
     def __getitem__(self, item):
 
@@ -71,8 +117,12 @@ class ThreeDMatchDataset(Dataset):
         pose_inv = se3_inv(pose)
         src_path = self.infos['src'][item]
         tgt_path = self.infos['tgt'][item]
-        src_xyz = torch.load(os.path.join(self.base_dir, src_path))
-        tgt_xyz = torch.load(os.path.join(self.base_dir, tgt_path))
+        src_raw = torch.load(os.path.join(self.base_dir, src_path))
+        tgt_raw = torch.load(os.path.join(self.base_dir, tgt_path))
+        src_xyz, src_rgb_loaded = self._split_xyz_rgb(src_raw)
+        tgt_xyz, tgt_rgb_loaded = self._split_xyz_rgb(tgt_raw)
+        src_rgb = self._make_rgb(src_xyz.shape[0], src_rgb_loaded)
+        tgt_rgb = self._make_rgb(tgt_xyz.shape[0], tgt_rgb_loaded)
         overlap_p = self.infos['overlap'][item]
 
         # Get overlap region
@@ -99,6 +149,9 @@ class ThreeDMatchDataset(Dataset):
             'tgt_path': tgt_path,
             'overlap_p': overlap_p,
         }
+        if src_rgb is not None:
+            data_pair['src_rgb'] = torch.from_numpy(src_rgb).float()
+            data_pair['tgt_rgb'] = torch.from_numpy(tgt_rgb).float()
 
         if self.transforms is not None:
             self.transforms(data_pair)  # Apply data augmentation

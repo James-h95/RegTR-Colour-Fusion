@@ -11,6 +11,7 @@ def collate_pair(list_data):
     # Collate as normal, other than fields that cannot be collated due to differing sizes,
     # we retain it as a python list
     to_retain_as_list = ['src_xyz', 'tgt_xyz', 'tgt_raw',
+                         'src_rgb', 'tgt_rgb',
                          'src_overlap', 'tgt_overlap',
                          'correspondences',
                          'src_path', 'tgt_path',

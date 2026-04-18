@@ -10,6 +10,16 @@ Tests:
 import os, sys, urllib.request, zipfile, pathlib, torch
 import numpy as np
 
+
+def _load_cloud_xyz_pt(path, device):
+    """Demo .pth may unpickle as torch.Tensor or numpy.ndarray."""
+    raw = torch.load(str(path), weights_only=False)
+    xyz = raw[:, :3]
+    if isinstance(xyz, np.ndarray):
+        xyz = torch.from_numpy(np.ascontiguousarray(xyz))
+    return xyz.float().to(device)
+
+
 REPO   = pathlib.Path(__file__).parent.resolve()
 SRC    = REPO / "src"
 CKPT   = REPO / "trained_models/3dmatch/ckpt/model-best.pth"
@@ -97,8 +107,8 @@ model.load_state_dict(state["state_dict"])
 model.eval()
 print("      Model loaded.")
 
-src_xyz = torch.load(str(SRC_PC), weights_only=False)[:, :3].float().to(device)
-tgt_xyz = torch.load(str(TGT_PC), weights_only=False)[:, :3].float().to(device)
+src_xyz = _load_cloud_xyz_pt(SRC_PC, device)
+tgt_xyz = _load_cloud_xyz_pt(TGT_PC, device)
 
 with torch.no_grad():
     outputs = model({"src_xyz": [src_xyz], "tgt_xyz": [tgt_xyz]})
