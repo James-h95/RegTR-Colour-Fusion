@@ -7,6 +7,6 @@ numpy
 scipy
 open3d
 tensorboard
-vtk==9.0.3
+vtk>=9.2.4,<10
 
-# Also install pytorch, pytorch3d, and Minkowski Engine
+# Also install PyTorch and PyTorch3D (match your CUDA). Grid subsampling uses pure PyTorch — no MinkowskiEngine.
