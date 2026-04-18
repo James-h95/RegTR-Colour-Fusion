@@ -116,11 +116,12 @@ with torch.no_grad():
 pose = outputs["pose"][-1, 0].cpu().numpy()
 
 assert not np.isnan(pose).any(),       "NaN in estimated pose"
-assert pose.shape == (4, 4),           f"Wrong pose shape: {pose.shape}"
+# RegTR outputs a 3×4 [R|t] matrix (no bottom row).
+assert pose.shape == (3, 4),           f"Wrong pose shape: {pose.shape}"
 assert abs(np.linalg.det(pose[:3,:3]) - 1.0) < 0.01, "Rotation matrix det != 1"
 
 print(f"      src: {src_xyz.shape[0]} pts  |  tgt: {tgt_xyz.shape[0]} pts")
-print(f"      Estimated pose (4x4):\n{np.round(pose, 4)}")
+print(f"      Estimated pose (3x4):\n{np.round(pose, 4)}")
 print("      PASS")
 
 print("\n" + "="*60)

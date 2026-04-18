@@ -1,0 +1,122 @@
+# Preset config for RegTR+ with Task 1 (CEFE-1 colour fusion) and Task 2
+# (relational self-attention) both enabled. Use this against Color3DMatch /
+# Color3DLoMatch to compare directly against ColorPCR.
+#
+# Usage:
+#   python train.py --config conf/color3dmatch.yaml
+#   python test.py  --config conf/color3dmatch.yaml --benchmark Color3DMatch \
+#                   --resume ../trained_models/<your_run>/model-best.pth
+#
+# Pre-flight checklist:
+#   - Place Color3DMatch fragments under ../data/indoor (same layout as 3DMatch
+#     but .pt files are (N, 6) tensors: XYZ + RGB).
+#   - Drop info pkls at datasets/3dmatch/test_Color3DMatch_info.pkl and the
+#     matching *_pairs-overlapmask.h5 files.
+#   - To sanity-check the colour pathway BEFORE Color3DMatch data lands, set
+#     color_source: random and train a few iters on plain 3DMatch. The model
+#     should still converge (colour carries no signal) but shapes will be
+#     exercised end-to-end.
+
+general:
+    expt_name: regtr_plus_color_relational
+
+dataset:
+    dataset: 3dmatch
+    root: '../data/indoor'
+    augment_noise: 0.005
+    perturb_pose: small
+    train_batch_size: 2
+    val_batch_size: 2
+    test_batch_size: 1
+    overlap_radius: 0.0375
+    use_color: True
+    color_source: auto  # flip to 'random' to validate architecture without real colour data
+
+train_options:
+    niter: -70
+
+solver:
+    optimizer: AdamW
+    base_lr: 0.0001
+    weight_decay: 0.0001
+    grad_clip: 0.1
+    scheduler: 'step'
+    scheduler_param: [205860, 0.5]
+
+kpconv_options:
+    num_layers: 4
+    neighborhood_limits: [40, 40, 40, 40]
+    aggregation_mode: sum
+    first_subsampling_dl: 0.025
+    first_feats_dim: 128
+    fixed_kernel_points: center
+    in_feats_dim: 3  # RGB
+    in_points_dim: 3
+    conv_radius: 2.5
+    deform_radius: 5.0
+    KP_extent: 2.0
+    KP_influence: linear
+    overlap_radius: 0.0375
+    use_batch_norm: True
+    batch_norm_momentum: 0.02
+    modulated: False
+    num_kernel_points: 15
+    architecture: ['simple',
+                   'resnetb',
+                   'resnetb_strided',
+                   'resnetb',
+                   'resnetb',
+                   'resnetb_strided',
+                   'resnetb',
+                   'resnetb',
+                   'resnetb_strided',
+                   'resnetb',
+                   'resnetb']
+
+model:
+    model: regtr.RegTR
+
+    attention_type: dot_prod
+    nhead: 8
+    d_embed: 256
+    d_feedforward: 1024
+    dropout: 0.0
+    pre_norm: True
+    transformer_act: relu
+
+    num_encoder_layers: 6
+    # Turn absolute sine pos emb OFF so the relational bias is the only
+    # positional signal reaching self-attention. Keep it ON for cross-attention
+    # and the decoder via corr_decoder_has_pos_emb.
+    transformer_encoder_has_pos_emb: False
+    sa_val_has_pos_emb: False
+    ca_val_has_pos_emb: True
+    pos_emb_type: sine
+
+    use_relational_pos_emb: True
+    relational_hidden_dim: 128
+    relational_sigma_d: 0.2
+    relational_sigma_a: 15.0
+    relational_angle_k: 3
+
+    corr_decoder_has_pos_emb: True
+    direct_regress_coor: True
+
+losses:
+    wt_overlap: 1.0
+    overlap_loss_pyr: 3
+    overlap_loss_on: [5]
+
+    wt_feature: 0.1
+    wt_feature_un: 0.0
+    r_p: 0.2
+    r_n: 0.4
+    feature_loss_on: [5]
+    feature_loss_type: infonce
+
+    wt_corr: 1.0
+    corr_loss_on: [5]
+
+validation:
+    reg_success_thresh_rot: 10
+    reg_success_thresh_trans: 0.1
