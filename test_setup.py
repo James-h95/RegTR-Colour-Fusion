@@ -91,13 +91,14 @@ from utils.misc import load_config
 
 cfg   = EasyDict(load_config(Path(CKPT).parents[1] / "config.yaml"))
 model = RegTR(cfg).to(device)
-state = torch.load(str(CKPT), map_location=device)
+# PyTorch 2.6+ defaults weights_only=True; RegTR release pickles need full unpickle.
+state = torch.load(str(CKPT), map_location=device, weights_only=False)
 model.load_state_dict(state["state_dict"])
 model.eval()
 print("      Model loaded.")
 
-src_xyz = torch.load(str(SRC_PC))[:, :3].float().to(device)
-tgt_xyz = torch.load(str(TGT_PC))[:, :3].float().to(device)
+src_xyz = torch.load(str(SRC_PC), weights_only=False)[:, :3].float().to(device)
+tgt_xyz = torch.load(str(TGT_PC), weights_only=False)[:, :3].float().to(device)
 
 with torch.no_grad():
     outputs = model({"src_xyz": [src_xyz], "tgt_xyz": [tgt_xyz]})
