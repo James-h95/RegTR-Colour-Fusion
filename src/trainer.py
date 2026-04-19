@@ -123,12 +123,56 @@ class Trainer:
                             else:
                                 losses['total'].backward()
 
+                            # A *finite* loss can still produce non-finite
+                            # gradients (e.g. SVD near rank-deficiency in
+                            # compute_rigid_transform, or runaway logits in
+                            # the overlap head). clip_grad_norm_ silently
+                            # propagates NaN/Inf through to optimizer.step
+                            # which writes them into the weights, after
+                            # which every subsequent forward pass is NaN
+                            # and the model is unrecoverable. Use the
+                            # returned total_norm as a cheap detector:
+                            # if it's non-finite, skip the step.
                             if self.grad_clip > 0:
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.grad_clip)
+                                total_norm = torch.nn.utils.clip_grad_norm_(
+                                    model.parameters(),
+                                    max_norm=self.grad_clip,
+                                )
+                            else:
+                                total_norm = torch.norm(torch.stack([
+                                    p.grad.detach().norm()
+                                    for p in model.parameters()
+                                    if p.grad is not None
+                                ]))
 
-                            if model.optimizer is not None:
+                            grads_finite = bool(torch.isfinite(total_norm))
+
+                            if grads_finite and model.optimizer is not None:
                                 model.optimizer.step()
                                 model.scheduler.step()
+                            elif not grads_finite:
+                                # Find the first offending parameter so we
+                                # know whether KPConv, the transformer, or
+                                # one of the heads is the culprit.
+                                bad_name = None
+                                for n, p in model.named_parameters():
+                                    if p.grad is not None and not torch.isfinite(p.grad).all():
+                                        bad_name = n
+                                        break
+                                self._bad_grad_count = getattr(self, '_bad_grad_count', 0) + 1
+                                if self._bad_grad_count <= 5 or self._bad_grad_count % 500 == 0:
+                                    self.logger.warning(
+                                        'Non-finite gradient detected '
+                                        '(count=%d, total_norm=%s, first_bad=%s); '
+                                        'skipping optimizer.step to protect '
+                                        'weights. idx=%s src=%s tgt=%s',
+                                        self._bad_grad_count,
+                                        total_norm.item(),
+                                        bad_name,
+                                        batch.get('idx'),
+                                        batch.get('src_path'),
+                                        batch.get('tgt_path'),
+                                    )
                         else:
                             # Without backward() the autograd graph for this
                             # batch sits on the GPU until `losses` is
