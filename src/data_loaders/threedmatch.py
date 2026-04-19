@@ -109,14 +109,34 @@ class ThreeDMatchDataset(Dataset):
         return xyz, rgb
 
     def _make_rgb(self, N, loaded_rgb):
-        """Resolve the RGB tensor per the configured color_source policy."""
+        """Resolve the RGB tensor per the configured color_source policy.
+
+        Guarantees the returned array has exactly N rows so downstream
+        transforms / the KPConv preprocessor can consume RGB as per-point
+        features. Some source fragments (e.g. ColorPCR raw dumps) ship an
+        RGB tensor whose length does not match the XYZ length; rather than
+        asserting mid-training we downgrade to zero-colour for that
+        fragment and emit a one-shot warning so the mismatch is visible in
+        the logs.
+        """
         if not self.use_color:
             return None
         if self.color_source == 'random':
             return np.random.rand(N, 3).astype(np.float32)
         if self.color_source == 'zeros' or loaded_rgb is None:
             return np.zeros((N, 3), dtype=np.float32)
-        return loaded_rgb.astype(np.float32)
+
+        rgb = loaded_rgb.astype(np.float32)
+        if rgb.ndim != 2 or rgb.shape[0] != N or rgb.shape[1] < 3:
+            if not getattr(type(self), '_rgb_shape_warned', False):
+                self.logger.warning(
+                    'RGB shape %s does not match xyz count %d; falling back '
+                    'to zero colour for this (and similar) fragments. Fix '
+                    'the source data or set color_source=zeros to silence.',
+                    tuple(rgb.shape), N)
+                type(self)._rgb_shape_warned = True
+            return np.zeros((N, 3), dtype=np.float32)
+        return rgb[:, :3]
 
     def __getitem__(self, item):
 
@@ -170,5 +190,20 @@ class ThreeDMatchDataset(Dataset):
 
         if self.transforms is not None:
             self.transforms(data_pair)  # Apply data augmentation
+
+        # Final alignment guard: RGB must be 1-to-1 with xyz by the time a
+        # pair leaves the dataset, otherwise RegTR.forward's stacked-RGB
+        # assertion fires mid-training. This is cheap insurance against any
+        # future transform that forgets to keep the colour channel in sync.
+        for xyz_k, rgb_k in (('src_xyz', 'src_rgb'), ('tgt_xyz', 'tgt_rgb')):
+            if rgb_k in data_pair and data_pair[rgb_k].shape[0] != data_pair[xyz_k].shape[0]:
+                self.logger.warning(
+                    'Post-transform %s/%s mismatch (%d vs %d) on idx=%d; '
+                    'replacing with zero colour.',
+                    rgb_k, xyz_k,
+                    data_pair[rgb_k].shape[0], data_pair[xyz_k].shape[0], item)
+                data_pair[rgb_k] = torch.zeros(
+                    (data_pair[xyz_k].shape[0], 3),
+                    dtype=data_pair[xyz_k].dtype)
 
         return data_pair

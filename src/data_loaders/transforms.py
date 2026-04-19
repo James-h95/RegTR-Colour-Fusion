@@ -125,6 +125,11 @@ class ShufflePoints:
         data['src_overlap'] = data['src_overlap'][src_idx]
         data['tgt_xyz'] = data['tgt_xyz'][tgt_idx, :]
         data['tgt_overlap'] = data['tgt_overlap'][tgt_idx]
+        # Keep RGB (Task 1) aligned with the shuffled/clipped xyz.
+        if 'src_rgb' in data:
+            data['src_rgb'] = data['src_rgb'][src_idx, :]
+        if 'tgt_rgb' in data:
+            data['tgt_rgb'] = data['tgt_rgb'][tgt_idx, :]
 
         return data
 
@@ -139,6 +144,9 @@ class RandomSwap:
             data['src_xyz'], data['tgt_xyz'] = data['tgt_xyz'], data['src_xyz']
             data['src_path'], data['tgt_path'] = data['tgt_path'], data['src_path']
             data['src_overlap'], data['tgt_overlap'] = data['tgt_overlap'], data['src_overlap']
+            # Keep RGB (Task 1) aligned with its xyz counterpart across the swap.
+            if 'src_rgb' in data and 'tgt_rgb' in data:
+                data['src_rgb'], data['tgt_rgb'] = data['tgt_rgb'], data['src_rgb']
             if 'correspondences' in data:
                 data['correspondences'] = torch.stack([data['correspondences'][1], data['correspondences'][0]])
             if 'corr_xyz' in data:

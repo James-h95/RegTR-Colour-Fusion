@@ -171,8 +171,18 @@ class RegTR(GenericRegModel):
                 [r.to(pts0.device) for r in batch['src_rgb'] + batch['tgt_rgb']],
                 dim=0,
             )
-            assert rgb_stacked.shape[0] == pts0.shape[0], \
-                f'RGB/point count mismatch: {rgb_stacked.shape[0]} vs {pts0.shape[0]}'
+            if rgb_stacked.shape[0] != pts0.shape[0]:
+                # Include per-fragment shapes so the log points at the
+                # offending item instead of just the stacked totals.
+                src_shapes = [tuple(x.shape) for x in batch['src_xyz']]
+                tgt_shapes = [tuple(x.shape) for x in batch['tgt_xyz']]
+                src_rgb_shapes = [tuple(x.shape) for x in batch['src_rgb']]
+                tgt_rgb_shapes = [tuple(x.shape) for x in batch['tgt_rgb']]
+                raise AssertionError(
+                    f'RGB/point count mismatch: {rgb_stacked.shape[0]} vs '
+                    f'{pts0.shape[0]}. src_xyz={src_shapes}, '
+                    f'tgt_xyz={tgt_shapes}, src_rgb={src_rgb_shapes}, '
+                    f'tgt_rgb={tgt_rgb_shapes}')
             feats0 = rgb_stacked
         else:
             feats0 = torch.ones_like(pts0[:, 0:1])
