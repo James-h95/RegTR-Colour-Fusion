@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import sys
 import time
@@ -137,11 +138,26 @@ class Trainer:
                         loss_smooth = losses['total'].item()
                     elif 'total' in losses and not all_isfinite(losses['total']):
                         self._bad_loss_count = getattr(self, '_bad_loss_count', 0) + 1
-                        if self._bad_loss_count <= 3 or self._bad_loss_count % 200 == 0:
+                        if self._bad_loss_count <= 5 or self._bad_loss_count % 500 == 0:
+                            # Per-component breakdown so we can see whether
+                            # the explosion starts in the overlap head, the
+                            # InfoNCE feature loss, or the corr loss.
+                            comp_strs = []
+                            for k, v in losses.items():
+                                if not isinstance(v, torch.Tensor):
+                                    continue
+                                try:
+                                    fv = v.detach().float().item()
+                                    state = 'NaN' if math.isnan(fv) else (
+                                        'Inf' if math.isinf(fv) else f'{fv:.3g}')
+                                except Exception:
+                                    state = '?'
+                                comp_strs.append(f'{k}={state}')
                             self.logger.warning(
                                 'Total loss is not finite, skipping backward '
-                                '(count=%d). Instance %s src=%s tgt=%s',
+                                '(count=%d). [%s] idx=%s src=%s tgt=%s',
                                 self._bad_loss_count,
+                                ', '.join(comp_strs),
                                 batch.get('idx'), batch.get('src_path'),
                                 batch.get('tgt_path'))
                     elif loss_is_finite and loss_smooth is not None:

@@ -51,13 +51,23 @@ class AverageMeter(object):
         self.sum = 0.0
         self.sq_sum = 0.0
         self.count = 0
+        self.nan_count = 0
 
     def update(self, val, n=1):
         if isinstance(val, torch.Tensor):
             val = val.item()
 
         if math.isnan(val):
-            self.logger.warning(f'Trying to update Average Meter {self.name} with invalid value, ignoring...')
+            # Rate-limit: NaN updates can fire every iteration when the
+            # model is unstable. Log the first few, then a periodic
+            # heartbeat with the running NaN count instead of one line
+            # per metric per batch.
+            self.nan_count += 1
+            if self.nan_count <= 3 or self.nan_count % 500 == 0:
+                self.logger.warning(
+                    f'Average Meter {self.name}: ignoring invalid (NaN) '
+                    f'update [#{self.nan_count}]'
+                )
             return
 
         self.val = val
