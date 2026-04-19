@@ -49,6 +49,14 @@ class ThreeDMatchDataset(Dataset):
 
         self.cfg = cfg
 
+        # Optional fallback root: if a fragment is missing from base_dir (e.g.
+        # Color3DMatch doesn't include every 3DMatch scene) we fall back to this
+        # directory for xyz-only data. Set cfg.fallback_root to '../data/indoor'.
+        fallback = cfg.get('fallback_root', None)
+        self.fallback_dir = fallback if (fallback and os.path.exists(f'{fallback}/train')) else None
+        if self.fallback_dir:
+            self.logger.info(f'Fallback root: {self.fallback_dir}')
+
         if os.path.exists(os.path.join(self.base_dir, pairs_fname)):
             self.pairs_data = h5py.File(os.path.join(self.base_dir, pairs_fname), 'r')
         else:
@@ -117,8 +125,15 @@ class ThreeDMatchDataset(Dataset):
         pose_inv = se3_inv(pose)
         src_path = self.infos['src'][item]
         tgt_path = self.infos['tgt'][item]
-        src_raw = torch.load(os.path.join(self.base_dir, src_path))
-        tgt_raw = torch.load(os.path.join(self.base_dir, tgt_path))
+
+        def _load_fragment(rel_path):
+            full = os.path.join(self.base_dir, rel_path)
+            if not os.path.exists(full) and self.fallback_dir:
+                full = os.path.join(self.fallback_dir, rel_path)
+            return torch.load(full, weights_only=False)
+
+        src_raw = _load_fragment(src_path)
+        tgt_raw = _load_fragment(tgt_path)
         src_xyz, src_rgb_loaded = self._split_xyz_rgb(src_raw)
         tgt_xyz, tgt_rgb_loaded = self._split_xyz_rgb(tgt_raw)
         src_rgb = self._make_rgb(src_xyz.shape[0], src_rgb_loaded)

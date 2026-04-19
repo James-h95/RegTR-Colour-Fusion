@@ -22,7 +22,8 @@ general:
 
 dataset:
     dataset: 3dmatch
-    root: '../data/indoor'
+    root: '../data/indoor_color'
+    fallback_root: '../data/indoor'   # xyz-only fallback for scenes not in Color3DMatch
     augment_noise: 0.005
     perturb_pose: small
     train_batch_size: 2
