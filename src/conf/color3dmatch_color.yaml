@@ -1,0 +1,91 @@
+# Task 1 (colour) ablation — TREATMENT run.
+# Color3DMatch data, colour channel ENABLED. Paired with
+# color3dmatch_nocolor.yaml (same config + use_color: False) — the only
+# difference is the colour pathway, so any performance gap is attributable
+# to RGB consumption.
+
+general:
+    expt_name: regtr_color_color3dmatch
+
+dataset:
+    dataset: 3dmatch
+    root: '../data/indoor_color'
+    fallback_root: '../data/indoor'
+    augment_noise: 0.005
+    perturb_pose: small
+    train_batch_size: 2
+    val_batch_size: 2
+    test_batch_size: 1
+    overlap_radius: 0.0375
+    use_color: True        # <-- TREATMENT: RGB consumed by KPConv
+    color_source: auto
+
+train_options:
+    niter: -5
+
+solver:
+    optimizer: AdamW
+    base_lr: 0.0001
+    weight_decay: 0.0001
+    grad_clip: 0.1
+    scheduler: 'step'
+    scheduler_param: [205860, 0.5]
+
+kpconv_options:
+    num_layers: 4
+    neighborhood_limits: [40, 40, 40, 40]
+    aggregation_mode: sum
+    first_subsampling_dl: 0.025
+    first_feats_dim: 128
+    fixed_kernel_points: center
+    in_feats_dim: 3        # <-- RGB as the 3-dim input feature
+    in_points_dim: 3
+    conv_radius: 2.5
+    deform_radius: 5.0
+    KP_extent: 2.0
+    KP_influence: linear
+    overlap_radius: 0.0375
+    use_batch_norm: True
+    batch_norm_momentum: 0.02
+    modulated: False
+    num_kernel_points: 15
+    architecture: ['simple','resnetb','resnetb_strided','resnetb','resnetb','resnetb_strided','resnetb','resnetb','resnetb_strided','resnetb','resnetb']
+
+model:
+    model: regtr.RegTR
+    attention_type: dot_prod
+    nhead: 8
+    d_embed: 256
+    d_feedforward: 1024
+    dropout: 0.0
+    pre_norm: True
+    transformer_act: relu
+    num_encoder_layers: 6
+    transformer_encoder_has_pos_emb: True
+    sa_val_has_pos_emb: True
+    ca_val_has_pos_emb: True
+    pos_emb_type: sine
+    use_relational_pos_emb: False   # Task 2 OFF — isolating Task 1 only
+    relational_hidden_dim: 128
+    relational_sigma_d: 0.2
+    relational_sigma_a: 15.0
+    relational_angle_k: 3
+    corr_decoder_has_pos_emb: True
+    direct_regress_coor: True
+
+losses:
+    wt_overlap: 1.0
+    overlap_loss_pyr: 3
+    overlap_loss_on: [5]
+    wt_feature: 0.1
+    wt_feature_un: 0.0
+    r_p: 0.2
+    r_n: 0.4
+    feature_loss_on: [5]
+    feature_loss_type: infonce
+    wt_corr: 1.0
+    corr_loss_on: [5]
+
+validation:
+    reg_success_thresh_rot: 10
+    reg_success_thresh_trans: 0.1
