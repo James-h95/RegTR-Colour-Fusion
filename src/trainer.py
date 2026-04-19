@@ -129,6 +129,18 @@ class Trainer:
                             if model.optimizer is not None:
                                 model.optimizer.step()
                                 model.scheduler.step()
+                        else:
+                            # Without backward() the autograd graph for this
+                            # batch sits on the GPU until `losses` is
+                            # reassigned next iteration, peaking memory at
+                            # ~2x and causing cascading OOMs on a tight
+                            # 16 GiB card. Detach all loss tensors so the
+                            # graph is freed immediately while still
+                            # leaving the scalar values for stats_meter.
+                            losses = {
+                                k: (v.detach() if isinstance(v, torch.Tensor) else v)
+                                for k, v in losses.items()
+                            }
 
                     # Increment counters
                     for k in losses:
@@ -189,8 +201,30 @@ class Trainer:
                     elif n % 200 == 0:
                         self.logger.error(f'{header} (suppressing traceback; {n} total so far)')
 
+                    # Critical for OOM recovery: drop every reference that
+                    # could still pin GPU memory (partial activations, the
+                    # autograd graph, the input batch, the traceback frames
+                    # themselves) and force the allocator to release any
+                    # cached blocks. Without this an OOM in the preprocessor
+                    # cascades because the previous batch's working set is
+                    # still resident on the next iteration.
+                    try:
+                        del losses
+                    except NameError:
+                        pass
+                    try:
+                        del train_output
+                    except NameError:
+                        pass
+                    try:
+                        del batch
+                    except NameError:
+                        pass
+                    del exc_obj, exc_tb, deepest_tb
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
                 tbar.update(1)
-                # torch.cuda.empty_cache()
 
                 if global_step == first_step + 1 or global_step % self.opt.summary_every == 0:
                     model.train_summary_fn(writer=self.train_writer, step=global_step,
