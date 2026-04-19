@@ -101,12 +101,21 @@ class Trainer:
                     batch = all_to_device(batch, device)
                     train_output, losses = model.training_step(batch, global_step)
 
+                    # Skip backward/step entirely on non-finite loss so NaN
+                    # gradients never reach the optimizer. A rare numerically
+                    # unstable batch should not be allowed to poison the
+                    # model weights via clip_grad_norm_ + step().
+                    loss_is_finite = (
+                        'total' in losses
+                        and losses['total'].requires_grad
+                        and all_isfinite(losses['total'])
+                    )
+
                     if model.optimizer_handled_by_trainer:
                         if model.optimizer is not None:
                             model.optimizer.zero_grad()
 
-                        # Back propagate, take optimization step
-                        if 'total' in losses and losses['total'].requires_grad:
+                        if loss_is_finite:
                             if self.opt.debug:
                                 with TorchDebugger():
                                     losses['total'].backward()
@@ -124,15 +133,21 @@ class Trainer:
                     for k in losses:
                         stats_meter[k].update(losses[k])
 
-                    if loss_smooth is None:
+                    if loss_smooth is None and loss_is_finite:
                         loss_smooth = losses['total'].item()
-                    elif not all_isfinite(losses['total']):
-                        self.logger.warning('Total loss is not finite, Ignoring...\n'
-                                            'Instance {}, src_path: {}, tgt_path: {}'.format(
-                            batch['item'], batch['src_path'], batch['tgt_path']))
-                    else:
+                    elif 'total' in losses and not all_isfinite(losses['total']):
+                        self._bad_loss_count = getattr(self, '_bad_loss_count', 0) + 1
+                        if self._bad_loss_count <= 3 or self._bad_loss_count % 200 == 0:
+                            self.logger.warning(
+                                'Total loss is not finite, skipping backward '
+                                '(count=%d). Instance %s src=%s tgt=%s',
+                                self._bad_loss_count,
+                                batch.get('idx'), batch.get('src_path'),
+                                batch.get('tgt_path'))
+                    elif loss_is_finite and loss_smooth is not None:
                         loss_smooth = 0.99 * loss_smooth + 0.01 * losses['total'].item()
-                    tbar.set_description('Loss:{:.3g}'.format(loss_smooth))
+                    if loss_smooth is not None:
+                        tbar.set_description('Loss:{:.3g}'.format(loss_smooth))
 
                 except Exception as inst:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -143,9 +158,20 @@ class Trainer:
                     while deepest_tb.tb_next is not None:
                         deepest_tb = deepest_tb.tb_next
                     fname = os.path.split(deepest_tb.tb_frame.f_code.co_filename)[1]
-                    self.logger.error(
-                        f'{exc_type.__name__} at {fname}:{deepest_tb.tb_lineno} '
-                        f'- {inst!r}\n{traceback.format_exc()}')
+                    # Rate-limit verbose tracebacks: keep them for the first
+                    # few occurrences of each (file, line), then just emit a
+                    # one-line summary so the log doesn't drown in stack
+                    # traces for a known, recoverable skip.
+                    key = (fname, deepest_tb.tb_lineno, exc_type.__name__)
+                    if not hasattr(self, '_exc_counts'):
+                        self._exc_counts = {}
+                    self._exc_counts[key] = self._exc_counts.get(key, 0) + 1
+                    n = self._exc_counts[key]
+                    header = f'{exc_type.__name__} at {fname}:{deepest_tb.tb_lineno} - {inst!r} [#{n}]'
+                    if n <= 3:
+                        self.logger.error(f'{header}\n{traceback.format_exc()}')
+                    elif n % 200 == 0:
+                        self.logger.error(f'{header} (suppressing traceback; {n} total so far)')
 
                 tbar.update(1)
                 # torch.cuda.empty_cache()

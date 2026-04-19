@@ -262,10 +262,21 @@ class RegTR(GenericRegModel):
                 torch.cat([src_xyz_c[b].expand(num_pred, -1, -1), src_corr_list[b]], dim=2),
                 torch.cat([tgt_corr_list[b], tgt_xyz_c[b].expand(num_pred, -1, -1)], dim=2)
             ], dim=1))
-            overlap_prob.append(torch.cat([
+            # Sigmoid maps to [0, 1] for any finite input, but NaN/Inf
+            # overlap logits (from a numerically unstable forward pass)
+            # slip through and later fail the weighted Kabsch sanity
+            # check at se3_torch.py:125. Treat non-finite weights as
+            # "zero confidence" so the batch degrades gracefully instead
+            # of aborting; non-finite-loss detection in the trainer still
+            # stops corrupt gradients from reaching the optimizer.
+            overlap_prob_b = torch.cat([
                 torch.sigmoid(src_overlap_list[b][:, :, 0]),
                 torch.sigmoid(tgt_overlap_list[b][:, :, 0]),
-            ], dim=1))
+            ], dim=1)
+            overlap_prob_b = torch.nan_to_num(
+                overlap_prob_b, nan=0.0, posinf=1.0, neginf=0.0
+            ).clamp_(0.0, 1.0)
+            overlap_prob.append(overlap_prob_b)
 
             # # Thresholds the overlap probability. Enable this for inference to get a slight boost
             # # in performance. However, we do not use this in the paper.
