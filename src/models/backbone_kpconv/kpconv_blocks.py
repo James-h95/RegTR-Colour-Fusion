@@ -496,7 +496,11 @@ class BatchNormBlock(nn.Module):
 
     def forward(self, x, stack_lengths):
 
-        assert x.shape[0] == stack_lengths.sum()
+        if x.shape[0] != stack_lengths.sum():
+            raise AssertionError(
+                f'BatchNormBlock row mismatch: x.shape={tuple(x.shape)} but '
+                f'stack_lengths.sum()={int(stack_lengths.sum())} '
+                f'(lengths={stack_lengths.tolist()})')
 
         if self.use_bn:
             if isinstance(self.norm, nn.BatchNorm1d):

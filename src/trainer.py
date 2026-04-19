@@ -136,9 +136,16 @@ class Trainer:
 
                 except Exception as inst:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
-                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                    self.logger.error(f'{exc_type} at {fname}:{exc_tb.tb_lineno} - {inst}')
-                    self.logger.debug(traceback.format_exc())
+                    # Walk to the deepest frame so the log points at the
+                    # actual raise site (e.g. a bare `assert` in a nested
+                    # block), not at this try/except.
+                    deepest_tb = exc_tb
+                    while deepest_tb.tb_next is not None:
+                        deepest_tb = deepest_tb.tb_next
+                    fname = os.path.split(deepest_tb.tb_frame.f_code.co_filename)[1]
+                    self.logger.error(
+                        f'{exc_type.__name__} at {fname}:{deepest_tb.tb_lineno} '
+                        f'- {inst!r}\n{traceback.format_exc()}')
 
                 tbar.update(1)
                 # torch.cuda.empty_cache()
