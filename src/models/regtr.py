@@ -183,7 +183,17 @@ class RegTR(GenericRegModel):
                     f'{pts0.shape[0]}. src_xyz={src_shapes}, '
                     f'tgt_xyz={tgt_shapes}, src_rgb={src_rgb_shapes}, '
                     f'tgt_rgb={tgt_rgb_shapes}')
-            feats0 = rgb_stacked
+            # Zero-center RGB ([0, 1] -> [-0.5, 0.5]) before feeding it to
+            # the first KPConv layer. Baseline REGTR's `feats0 = ones`
+            # input has a fixed scale that the kernels are implicitly
+            # calibrated for; raw RGB has mean ~0.5 and the resulting
+            # asymmetric activations occasionally produce extreme single-
+            # kernel responses on certain fragments, blowing up the
+            # gradient w.r.t. kpf_encoder.encoder_blocks.0.KPConv.weights.
+            # Centering halves the worst-case input magnitude and removes
+            # the systematic positive bias without losing any colour
+            # information.
+            feats0 = rgb_stacked - 0.5
         else:
             feats0 = torch.ones_like(pts0[:, 0:1])
 
