@@ -1,11 +1,9 @@
-# Task 1 (colour) ablation — CONTROL run.
-# Color3DMatch data, colour channel DISABLED. This is "OG RegTR on coloured
-# data" — the model sees xyz only, ignoring the RGB that's available.
-# Pair with color3dmatch_color.yaml (same config + use_color: True) to
-# isolate the contribution of the colour pathway.
+# 4-way ablation: relational-PE only (Task 2 on Color3DMatch).
+# Color3DMatch data, colour OFF, relational pos emb ON. Paired with the
+# baseline / colour-only / full configs to make a clean 2x2 ablation.
 
 general:
-    expt_name: regtr_nocolor_color3dmatch
+    expt_name: regtr_relpos_color3dmatch
 
 dataset:
     dataset: 3dmatch
@@ -17,7 +15,7 @@ dataset:
     val_batch_size: 2
     test_batch_size: 1
     overlap_radius: 0.0375
-    use_color: False       # <-- CONTROL: RGB not consumed
+    use_color: False
     color_source: auto
 
 train_options:
@@ -38,7 +36,7 @@ kpconv_options:
     first_subsampling_dl: 0.025
     first_feats_dim: 128
     fixed_kernel_points: center
-    in_feats_dim: 1        # <-- ones, geometry-blind
+    in_feats_dim: 1
     in_points_dim: 3
     conv_radius: 2.5
     deform_radius: 5.0
@@ -61,12 +59,11 @@ model:
     pre_norm: True
     transformer_act: relu
     num_encoder_layers: 6
-    # Keep absolute sine pos emb ON for both runs so only colour differs.
-    transformer_encoder_has_pos_emb: True
-    sa_val_has_pos_emb: True
+    transformer_encoder_has_pos_emb: False
+    sa_val_has_pos_emb: False
     ca_val_has_pos_emb: True
     pos_emb_type: sine
-    use_relational_pos_emb: False   # Task 2 OFF — isolating Task 1 only
+    use_relational_pos_emb: True
     relational_hidden_dim: 128
     relational_sigma_d: 0.2
     relational_sigma_a: 15.0

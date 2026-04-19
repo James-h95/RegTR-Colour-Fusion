@@ -34,7 +34,7 @@ dataset:
     color_source: auto  # flip to 'random' to validate architecture without real colour data
 
 train_options:
-    niter: -70
+    niter: -5
 
 solver:
     optimizer: AdamW
