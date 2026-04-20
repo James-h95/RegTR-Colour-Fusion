@@ -17,6 +17,13 @@ from utils.se3_torch import compute_rigid_transform, se3_transform_list, se3_inv
 from utils.seq_manipulation import split_src_tgt, pad_sequence, unpad_sequences
 from utils.viz import visualize_registration
 _TIMEIT = False
+# One-shot wiring diagnostic: logs a single line on the very first forward
+# pass confirming that (a) RGB actually reaches feats0 when use_color=True
+# (i.e. it's not silently falling through to ones), and (b) the relational
+# bias magnitude is in a reasonable range when use_relational_pos_emb=True.
+# This is the fingerprint you grep for to distinguish "my change is a no-op"
+# from "my change is active but undertrained" in ablation logs.
+_WIRING_LOGGED = False
 
 
 def _pack_sa_bias(bias_list):
@@ -232,6 +239,33 @@ class RegTR(GenericRegModel):
         if self.use_relational_pos_emb:
             src_sa_bias = _pack_sa_bias(self.geo_embed(src_xyz_c))
             tgt_sa_bias = _pack_sa_bias(self.geo_embed(tgt_xyz_c))
+
+        # One-shot wiring diagnostic (see module-level comment). Logs a
+        # single line on the first forward pass of a run. If use_color=True
+        # but feats0 is exactly ones, RGB never reached the model. If the
+        # relational bias mean-abs is O(100+), sigma_d is mis-scaled and
+        # the bias will swamp attention logits.
+        global _WIRING_LOGGED
+        if not _WIRING_LOGGED:
+            with torch.no_grad():
+                f = feats0
+                msg = (
+                    f'[WIRING] use_color={self.use_color} '
+                    f'use_relational_pos_emb={self.use_relational_pos_emb} '
+                    f'| feats0: shape={tuple(f.shape)} '
+                    f'mean={f.mean().item():.4f} std={f.std().item():.4f} '
+                    f'min={f.min().item():.4f} max={f.max().item():.4f}'
+                )
+                if src_sa_bias is not None:
+                    b = src_sa_bias
+                    msg += (
+                        f' | src_sa_bias: shape={tuple(b.shape)} '
+                        f'mean={b.mean().item():.4f} std={b.std().item():.4f} '
+                        f'absmean={b.abs().mean().item():.4f} '
+                        f'min={b.min().item():.4f} max={b.max().item():.4f}'
+                    )
+            self.logger.info(msg)
+            _WIRING_LOGGED = True
 
         # Performs padding, then apply attention (REGTR "encoder" stage) to condition on the other
         # point cloud

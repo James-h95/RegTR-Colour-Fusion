@@ -13,7 +13,8 @@ dataset:
     fallback_root: '../data/indoor'
     augment_noise: 0.005
     perturb_pose: small
-    train_batch_size: 2
+    # Must match the other 3 ablation configs. See color3dmatch_baseline.yaml.
+    train_batch_size: 1
     val_batch_size: 2
     test_batch_size: 1
     overlap_radius: 0.0375
@@ -21,7 +22,7 @@ dataset:
     color_source: auto
 
 train_options:
-    niter: -5
+    niter: -15
 
 solver:
     optimizer: AdamW

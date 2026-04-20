@@ -13,7 +13,11 @@ dataset:
     fallback_root: '../data/indoor'
     augment_noise: 0.005
     perturb_pose: small
-    train_batch_size: 2
+    # bs=1 to match the full Color+Relational run (color3dmatch.yaml), which
+    # was forced to bs=1 by GPU memory. All four ablation cells MUST share
+    # train_batch_size or the gradient-noise profile differs and the
+    # comparison isn't apples-to-apples.
+    train_batch_size: 1
     val_batch_size: 2
     test_batch_size: 1
     overlap_radius: 0.0375
@@ -21,7 +25,11 @@ dataset:
     color_source: auto
 
 train_options:
-    niter: -5
+    # Bumped from -5: at bs=1, 5 epochs was ~100k steps which is below the
+    # first scheduler step (205860) and far below convergence. -15 gives
+    # one LR decay and enough training to distinguish architecture effects
+    # from undertraining.
+    niter: -15
 
 solver:
     optimizer: AdamW

@@ -34,7 +34,9 @@ dataset:
     color_source: auto  # flip to 'random' to validate architecture without real colour data
 
 train_options:
-    niter: -5
+    # See color3dmatch_baseline.yaml: -15 for a fair comparison against the
+    # three 1-knob ablations (all four share train_batch_size=1 and niter=-15).
+    niter: -15
 
 solver:
     optimizer: AdamW
