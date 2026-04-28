@@ -20,7 +20,7 @@ dataset:
     color_source: auto
 
 train_options:
-    niter: -15
+    niter: -5  # diagnostic run: 5 epochs enough to see direction
 
 solver:
     optimizer: AdamW
