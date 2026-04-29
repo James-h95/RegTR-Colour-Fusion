@@ -34,9 +34,8 @@ dataset:
     color_source: auto  # flip to 'random' to validate architecture without real colour data
 
 train_options:
-    # See color3dmatch_baseline.yaml: -15 for a fair comparison against the
-    # three 1-knob ablations (all four share train_batch_size=1 and niter=-15).
-    niter: -15
+    # Short diagnostic run for hybrid positional encoding sanity check.
+    niter: -5
 
 solver:
     optimizer: AdamW
@@ -88,11 +87,10 @@ model:
     transformer_act: relu
 
     num_encoder_layers: 6
-    # Turn absolute sine pos emb OFF so the relational bias is the only
-    # positional signal reaching self-attention. Keep it ON for cross-attention
-    # and the decoder via corr_decoder_has_pos_emb.
-    transformer_encoder_has_pos_emb: False
-    sa_val_has_pos_emb: False
+    # Hybrid positional encoding: keep absolute sine PE and add relational
+    # bias on top. This avoids the "relational-only" optimization cold start.
+    transformer_encoder_has_pos_emb: True
+    sa_val_has_pos_emb: True
     ca_val_has_pos_emb: True
     pos_emb_type: sine
 

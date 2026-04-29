@@ -60,8 +60,8 @@ model:
     pre_norm: True
     transformer_act: relu
     num_encoder_layers: 6
-    transformer_encoder_has_pos_emb: False
-    sa_val_has_pos_emb: False
+    transformer_encoder_has_pos_emb: True
+    sa_val_has_pos_emb: True
     ca_val_has_pos_emb: True
     pos_emb_type: sine
     use_relational_pos_emb: True
