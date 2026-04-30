@@ -66,7 +66,8 @@ model:
     pos_emb_type: sine
     use_relational_pos_emb: True
     relational_hidden_dim: 128
-    relational_sigma_d: 0.2
+    # See color3dmatch.yaml: 0.2 -> 1.0 to match bottleneck point spacing.
+    relational_sigma_d: 1.0
     relational_sigma_a: 15.0
     relational_angle_k: 3
     corr_decoder_has_pos_emb: True

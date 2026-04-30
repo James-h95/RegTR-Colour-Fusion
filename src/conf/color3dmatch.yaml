@@ -96,7 +96,12 @@ model:
 
     use_relational_pos_emb: True
     relational_hidden_dim: 128
-    relational_sigma_d: 0.2
+    # Bumped 0.2 -> 1.0: the bottleneck point spacing on 3DMatch is ~0.2m
+    # (4 stride-2 layers from a 0.025m subsample), so sigma_d=0.2 caused the
+    # Gaussian bias to decay to ~0 for almost every pair, leaving only
+    # nearest-neighbour pairs with meaningful signal. sigma_d=1.0 makes the
+    # bias informative across a much larger fraction of the attention matrix.
+    relational_sigma_d: 1.0
     relational_sigma_a: 15.0
     relational_angle_k: 3
 

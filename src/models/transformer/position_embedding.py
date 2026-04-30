@@ -54,6 +54,17 @@ class GeometricStructureEmbedding(nn.Module):
         self.proj_a = nn.Linear(hidden_dim, hidden_dim)
         self.proj_bias = nn.Linear(hidden_dim, num_heads)
 
+        # Zero-init the final bias projection so the relational pathway starts
+        # as a NO-OP (bias = 0 everywhere). The model then behaves identically
+        # to the no-relational baseline at step 0 and gradually learns to use
+        # the relational signal as training progresses. This prevents the
+        # untrained bias from disrupting attention during the optimisation
+        # cold-start (the failure mode observed when relational PE was wired
+        # in additively — small +1pp gain at 5 epochs, plausibly because the
+        # noisy bias was actively hurting early training).
+        nn.init.zeros_(self.proj_bias.weight)
+        nn.init.zeros_(self.proj_bias.bias)
+
     @torch.no_grad()
     def _distances_and_angles(self, points: torch.Tensor):
         # points: (N, 3)
