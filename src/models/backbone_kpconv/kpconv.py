@@ -10,7 +10,7 @@ from pytorch3d.ops import packed_to_padded, ball_query
 
 # # Uncomment the following two lines if you want to use the CPU operations for KPConv
 # # preprocessing (you'll need to compile the code using the included bash scripts)
-# from .cpp_wrappers.cpp_subsampling import grid_subsampling as cpp_subsampling
+# from .cpp_wrappers.cpp_subsampling import grid_subsampling as cpp_subsampling 
 # from .cpp_wrappers.cpp_neighbors import radius_neighbors as cpp_neighbors
 from .kpconv_blocks import *
 
