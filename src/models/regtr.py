@@ -20,25 +20,33 @@ _TIMEIT = False
 # One-shot wiring diagnostic: logs a single line on the very first forward
 # pass confirming that (a) RGB actually reaches feats0 when use_color=True
 # (i.e. it's not silently falling through to ones), and (b) the relational
-# bias magnitude is in a reasonable range when use_relational_pos_emb=True.
+# embedding tensor has a sane magnitude when use_relational_pos_emb=True.
 # This is the fingerprint you grep for to distinguish "my change is a no-op"
 # from "my change is active but undertrained" in ablation logs.
 _WIRING_LOGGED = False
 
 
-def _pack_sa_bias(bias_list):
-    """Pad a list of per-sample (num_heads, N_i, N_i) biases into a single
-    (B*num_heads, N_max, N_max) tensor for nn.MultiheadAttention's attn_mask."""
-    if len(bias_list) == 0:
+def _pack_sa_relation(rel_list):
+    """Pad a list of per-sample (N_i, N_i, head_dim) relational embeddings
+    into a single (B, N_max, N_max, head_dim) tensor for the Q·R term in
+    GeometricMultiheadAttention.
+
+    Padding is zero — for any (i, j) where either i or j is a padded
+    position the relation contributes nothing, and the corresponding
+    attention logits are masked out by `key_padding_mask` in the encoder
+    layer anyway.
+    """
+    if len(rel_list) == 0:
         return None
-    H = bias_list[0].shape[0]
-    N_max = max(b.shape[-1] for b in bias_list)
-    device, dtype = bias_list[0].device, bias_list[0].dtype
-    padded = torch.zeros(len(bias_list), H, N_max, N_max, device=device, dtype=dtype)
-    for i, b in enumerate(bias_list):
-        n = b.shape[-1]
-        padded[i, :, :n, :n] = b
-    return padded.reshape(len(bias_list) * H, N_max, N_max)
+    head_dim = rel_list[0].shape[-1]
+    N_max = max(r.shape[0] for r in rel_list)
+    device, dtype = rel_list[0].device, rel_list[0].dtype
+    padded = torch.zeros(len(rel_list), N_max, N_max, head_dim,
+                         device=device, dtype=dtype)
+    for i, r in enumerate(rel_list):
+        n = r.shape[0]
+        padded[i, :n, :n, :] = r
+    return padded
 
 
 class RegTR(GenericRegModel):
@@ -79,15 +87,20 @@ class RegTR(GenericRegModel):
                 f'config, got {cfg.in_feats_dim}.'
             )
 
-        # Optional GeoTransformer-style relational encoding for self-attention.
-        # When enabled it is added as a per-pair bias to the transformer's
-        # self-attention; the absolute pos_embed above is still used for the
-        # correspondence decoder (and optionally the cross-attention values).
+        # GeoTransformer-style relational encoding for self-attention (Tier 3).
+        # When enabled, the encoder's self-attention computes
+        #     attn[i,j] = (Q_i · K_j + Q_i · R_ij) / sqrt(d)
+        # where R_ij is a head-shared per-pair embedding in K-space (head_dim).
+        # Cross-attention is unchanged. Absolute sine pos_embed (above) can
+        # still be enabled in the config and used additively with the
+        # relational signal — the previous failure mode of pure replacement
+        # is captured on the `exp/replos` branch.
         self.use_relational_pos_emb = cfg.get('use_relational_pos_emb', False)
         if self.use_relational_pos_emb:
             self.geo_embed = GeometricStructureEmbedding(
                 hidden_dim=cfg.get('relational_hidden_dim', 128),
                 num_heads=cfg.nhead,
+                d_model=cfg.d_embed,
                 sigma_d=cfg.get('relational_sigma_d', 0.2),
                 sigma_a=cfg.get('relational_sigma_a', 15.0),
                 angle_k=cfg.get('relational_angle_k', 3),
@@ -234,17 +247,20 @@ class RegTR(GenericRegModel):
         src_pe_padded, _, _ = pad_sequence(src_pe)
         tgt_pe_padded, _, _ = pad_sequence(tgt_pe)
 
-        # Optional relational (GeoTransformer-style) self-attention bias
-        src_sa_bias = tgt_sa_bias = None
+        # GeoTransformer-style relational embedding for self-attention (Tier 3).
+        # Per-pair head-shared K-space tensor (B, N_max, N_max, head_dim) that
+        # the encoder layer adds as a Q·R term to its attention logits.
+        src_sa_relation = tgt_sa_relation = None
         if self.use_relational_pos_emb:
-            src_sa_bias = _pack_sa_bias(self.geo_embed(src_xyz_c))
-            tgt_sa_bias = _pack_sa_bias(self.geo_embed(tgt_xyz_c))
+            src_sa_relation = _pack_sa_relation(self.geo_embed(src_xyz_c))
+            tgt_sa_relation = _pack_sa_relation(self.geo_embed(tgt_xyz_c))
 
         # One-shot wiring diagnostic (see module-level comment). Logs a
         # single line on the first forward pass of a run. If use_color=True
-        # but feats0 is exactly ones, RGB never reached the model. If the
-        # relational bias mean-abs is O(100+), sigma_d is mis-scaled and
-        # the bias will swamp attention logits.
+        # but feats0 is exactly ones, RGB never reached the model. With
+        # zero-init on proj_r, src_sa_relation should report absmean ~0 at
+        # step 0 and grow as training progresses; non-zero at step 0 means
+        # zero-init didn't take.
         global _WIRING_LOGGED
         if not _WIRING_LOGGED:
             with torch.no_grad():
@@ -256,13 +272,13 @@ class RegTR(GenericRegModel):
                     f'mean={f.mean().item():.4f} std={f.std().item():.4f} '
                     f'min={f.min().item():.4f} max={f.max().item():.4f}'
                 )
-                if src_sa_bias is not None:
-                    b = src_sa_bias
+                if src_sa_relation is not None:
+                    r = src_sa_relation
                     msg += (
-                        f' | src_sa_bias: shape={tuple(b.shape)} '
-                        f'mean={b.mean().item():.4f} std={b.std().item():.4f} '
-                        f'absmean={b.abs().mean().item():.4f} '
-                        f'min={b.min().item():.4f} max={b.max().item():.4f}'
+                        f' | src_sa_relation: shape={tuple(r.shape)} '
+                        f'mean={r.mean().item():.4f} std={r.std().item():.4f} '
+                        f'absmean={r.abs().mean().item():.4f} '
+                        f'min={r.min().item():.4f} max={r.max().item():.4f}'
                     )
             self.logger.info(msg)
             _WIRING_LOGGED = True
@@ -279,8 +295,8 @@ class RegTR(GenericRegModel):
             tgt_key_padding_mask=tgt_key_padding_mask,
             src_pos=src_pe_padded if self.cfg.transformer_encoder_has_pos_emb else None,
             tgt_pos=tgt_pe_padded if self.cfg.transformer_encoder_has_pos_emb else None,
-            src_sa_attn_bias=src_sa_bias,
-            tgt_sa_attn_bias=tgt_sa_bias,
+            src_sa_relation=src_sa_relation,
+            tgt_sa_relation=tgt_sa_relation,
         )
 
         src_corr_list, tgt_corr_list, src_overlap_list, tgt_overlap_list = \

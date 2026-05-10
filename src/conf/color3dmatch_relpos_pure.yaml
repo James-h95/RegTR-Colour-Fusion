@@ -1,0 +1,125 @@
+# PURE relational PE configuration — the one that actually delivers the
+# rotation-invariance claim from the lit review.
+#
+# Encoder self-attention sees ONLY rigid-invariant geometric primitives
+# (pairwise distances + triplet angles via Q·R) — no absolute sine PE.
+# This is the config that lets you write "the encoder operates on
+# rigid-invariant geometric features" without an asterisk.
+#
+# Compare against:
+#   - color3dmatch_relpos.yaml (HYBRID: sine + Q·R) — the pragmatic version
+#   - color3dmatch_baseline.yaml (sine only)        — the baseline
+#
+# Caveats to be honest about in the writeup:
+#   - KPConv input coordinates are still in absolute frame (not the relpos
+#     pathway's responsibility — would need an SE(3)-equivariant backbone
+#     for full SE(3) invariance, which is out of scope for this thesis).
+#   - The cross-attention decoder still uses absolute pos emb because src
+#     and tgt live in different frames; relative geometry across them
+#     isn't well-defined. So the FULL pipeline is still frame-dependent;
+#     this config only delivers invariance in the *encoder's self-attention*.
+#   - Pure relational was previously a non-starter with the simplified
+#     additive bias (collapsed to 9.6% reg_success). Whether it trains now
+#     with the Tier 3 Q·R port is the open empirical question this config
+#     answers. If it does train, the invariance claim is supported. If it
+#     doesn't, hybrid is the honest mainline and the claim is softened to
+#     "partial invariance via additive Q·R bias on top of absolute PE".
+
+general:
+    expt_name: regtr_relpos_pure_color3dmatch
+
+dataset:
+    dataset: 3dmatch
+    root: '../data/indoor_color'
+    fallback_root: '../data/indoor'
+    augment_noise: 0.005
+    perturb_pose: small
+    train_batch_size: 1
+    val_batch_size: 2
+    test_batch_size: 1
+    overlap_radius: 0.0375
+    use_color: False
+    color_source: auto
+
+train_options:
+    niter: -5  # diagnostic run; bump to -15+ for the thesis convergence run
+
+solver:
+    optimizer: AdamW
+    base_lr: 0.0001
+    weight_decay: 0.0001
+    grad_clip: 0.1
+    scheduler: 'step'
+    scheduler_param: [205860, 0.5]
+
+kpconv_options:
+    num_layers: 4
+    neighborhood_limits: [40, 40, 40, 40]
+    aggregation_mode: sum
+    first_subsampling_dl: 0.025
+    first_feats_dim: 128
+    fixed_kernel_points: center
+    in_feats_dim: 1
+    in_points_dim: 3
+    conv_radius: 2.5
+    deform_radius: 5.0
+    KP_extent: 2.0
+    KP_influence: linear
+    overlap_radius: 0.0375
+    use_batch_norm: True
+    batch_norm_momentum: 0.02
+    modulated: False
+    num_kernel_points: 15
+    architecture: ['simple','resnetb','resnetb_strided','resnetb','resnetb','resnetb_strided','resnetb','resnetb','resnetb_strided','resnetb','resnetb']
+
+model:
+    model: regtr.RegTR
+    attention_type: dot_prod
+    nhead: 8
+    d_embed: 256
+    d_feedforward: 1024
+    dropout: 0.0
+    pre_norm: True
+    transformer_act: relu
+    num_encoder_layers: 6
+
+    # === The flags that make this PURE relational ===
+    # Absolute sine pos emb OFF in the encoder: the encoder's only positional
+    # signal is the Q·R relational term. THIS is what carries the invariance
+    # claim. If you flip these to True, you're back to hybrid and the
+    # invariance claim weakens.
+    transformer_encoder_has_pos_emb: False
+    sa_val_has_pos_emb: False
+    # Cross-attention keeps absolute pos emb because src/tgt are in
+    # different frames (relative geometry across them isn't well-defined).
+    ca_val_has_pos_emb: True
+    pos_emb_type: sine
+
+    # Q·R relational PE ON, with the Tier 3 (faithful GeoTransformer)
+    # implementation from fix/relpos. The simplified additive-bias version
+    # (on exp/replos) was what made pure-relational previously infeasible.
+    use_relational_pos_emb: True
+    relational_hidden_dim: 128
+    relational_sigma_d: 1.0
+    relational_sigma_a: 15.0
+    relational_angle_k: 3
+
+    corr_decoder_has_pos_emb: True
+    direct_regress_coor: True
+
+losses:
+    wt_overlap: 1.0
+    overlap_loss_pyr: 3
+    overlap_loss_on: [5]
+    wt_feature: 0.1
+    wt_feature_un: 0.0
+    r_p: 0.2
+    r_n: 0.4
+    feature_loss_on: [5]
+    feature_loss_type: infonce
+    wt_corr: 1.0
+    corr_loss_on: [5]
+
+validation:
+    reg_success_thresh_rot: 10
+    reg_success_thresh_trans: 0.1

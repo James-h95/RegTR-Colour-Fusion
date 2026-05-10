@@ -24,26 +24,47 @@ class SinusoidalScalarEmbedding(nn.Module):
 
 
 class GeometricStructureEmbedding(nn.Module):
-    """GeoTransformer-style relational positional encoding.
+    """GeoTransformer-style relational positional encoding (Tier 3, Q·R port).
 
-    Produces a per-pair additive bias for self-attention that is invariant to
-    rigid transforms of the input point cloud. Built from:
+    Produces a per-pair geometric embedding suitable for the FULL GeoTransformer
+    geometric self-attention formulation:
+
+        attn[i,j] = (Q_i · K_j  +  Q_i · R_ij) / sqrt(d)
+
+    where R_ij is a per-pair embedding projected into key (head_dim) space.
+    This is materially different from the simplified additive-logit-bias port
+    we used previously (`attn[i,j] = Q_i · K_j + bias[i,j]`): in this Q·R
+    formulation the relational contribution depends on the query content,
+    so different queries can attend to different geometric patterns. The
+    additive bias couldn't express that — every query saw the same scalar
+    bias for a given (i,j) pair, which is why the simplified port was
+    expressively crippled and contributed ~0pp on top of the colour
+    pathway in our 5-epoch ablation.
+
+    R is built from rigid-invariant primitives:
       * Pairwise distance embeddings (PDE).
-      * Triplet-angle embeddings (TAE) aggregated over the k-nearest
-        neighbours of each anchor.
+      * Triplet-angle embeddings (TAE) aggregated over each anchor's k-NN.
 
-    forward(points_list) returns a list of tensors shaped (num_heads, N_i, N_i)
-    — one per sample — suitable for being stacked/padded into an attn_mask for
-    nn.MultiheadAttention.
+    Shared across heads (matches GeoTransformer's published code: a single
+    head-shared geometric prior keeps memory bounded and lets per-head
+    diversity come from the per-head Q projections).
+
+    forward(points_list) returns a list of tensors shaped (N_i, N_i, head_dim)
+    — one per sample. RegTR's _pack_sa_relation pads the list into a single
+    (B, N_max, N_max, head_dim) tensor that the custom self-attention layer
+    consumes via einsum.
     """
 
-    def __init__(self, hidden_dim: int, num_heads: int,
+    def __init__(self, hidden_dim: int, num_heads: int, d_model: int,
                  sigma_d: float = 0.2, sigma_a: float = 15.0,
                  angle_k: int = 3, reduction: str = 'max'):
         super().__init__()
         assert reduction in ('max', 'mean')
+        assert d_model % num_heads == 0, (
+            f'd_model={d_model} must be divisible by num_heads={num_heads}')
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
         self.sigma_d = sigma_d
         self.factor_a = 180.0 / (sigma_a * math.pi)  # maps radians → ~O(1)
         self.angle_k = angle_k
@@ -52,18 +73,20 @@ class GeometricStructureEmbedding(nn.Module):
         self.embedding = SinusoidalScalarEmbedding(hidden_dim)
         self.proj_d = nn.Linear(hidden_dim, hidden_dim)
         self.proj_a = nn.Linear(hidden_dim, hidden_dim)
-        self.proj_bias = nn.Linear(hidden_dim, num_heads)
+        # Project the (distance + angle) pair embedding into key space so it
+        # can be dotted with per-head queries. Shape contract: produces an
+        # R_ij vector in head_dim space for each (i, j) pair.
+        self.proj_r = nn.Linear(hidden_dim, self.head_dim)
 
-        # Zero-init the final bias projection so the relational pathway starts
-        # as a NO-OP (bias = 0 everywhere). The model then behaves identically
-        # to the no-relational baseline at step 0 and gradually learns to use
-        # the relational signal as training progresses. This prevents the
-        # untrained bias from disrupting attention during the optimisation
-        # cold-start (the failure mode observed when relational PE was wired
-        # in additively — small +1pp gain at 5 epochs, plausibly because the
-        # noisy bias was actively hurting early training).
-        nn.init.zeros_(self.proj_bias.weight)
-        nn.init.zeros_(self.proj_bias.bias)
+        # Zero-init the final relational projection so the pathway starts as
+        # a NO-OP (R = 0 everywhere → Q·R = 0 → standard self-attention at
+        # step 0). The model then gradually learns to use the relational
+        # signal as training progresses. Without this, the untrained R
+        # disrupts attention during cold-start optimisation — exactly the
+        # failure mode we observed in the additive-bias version on the
+        # `exp/replos` branch (rising val loss across early epochs).
+        nn.init.zeros_(self.proj_r.weight)
+        nn.init.zeros_(self.proj_r.bias)
 
     @torch.no_grad()
     def _distances_and_angles(self, points: torch.Tensor):
@@ -90,18 +113,22 @@ class GeometricStructureEmbedding(nn.Module):
 
     def _embed_pair(self, points: torch.Tensor) -> torch.Tensor:
         dists, angles = self._distances_and_angles(points)  # (N,N), (N,N,K)
-        d_emb = self.proj_d(self.embedding(dists / self.sigma_d))  # (N, N, H)
-        a_emb = self.proj_a(self.embedding(angles * self.factor_a))  # (N, N, K, H)
+        d_emb = self.proj_d(self.embedding(dists / self.sigma_d))  # (N, N, hidden)
+        a_emb = self.proj_a(self.embedding(angles * self.factor_a))  # (N, N, K, hidden)
         if self.reduction == 'max':
             a_emb = a_emb.max(dim=-2).values
         else:
             a_emb = a_emb.mean(dim=-2)
-        pair_emb = d_emb + a_emb  # (N, N, H)
-        bias = self.proj_bias(pair_emb)  # (N, N, num_heads)
-        return bias.permute(2, 0, 1).contiguous()  # (num_heads, N, N)
+        pair_emb = d_emb + a_emb  # (N, N, hidden)
+        r = self.proj_r(pair_emb)  # (N, N, head_dim) — head-shared K-space embedding
+        return r
 
     def forward(self, points_list):
-        """points_list: list of (N_i, 3) — one per batch sample."""
+        """points_list: list of (N_i, 3) — one per batch sample.
+        Returns: list of (N_i, N_i, head_dim) — per-pair K-space relational
+        embeddings to be combined with queries via the Q·R term in
+        GeometricMultiheadAttention.
+        """
         return [self._embed_pair(p) for p in points_list]
 
 

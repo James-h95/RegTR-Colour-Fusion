@@ -15,6 +15,103 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 
 
+class GeometricMultiheadAttention(nn.Module):
+    """Self-attention with optional GeoTransformer-style relational Q·R term.
+
+    Standard scaled dot-product attention computes
+        attn[b, h, i, j] = (Q[b, h, i, :] · K[b, h, j, :]) / sqrt(d).
+
+    With a `relation` tensor R provided, the attention logits gain an
+    additional content-aware geometric term:
+        attn[b, h, i, j] = (Q[b, h, i, :] · K[b, h, j, :]
+                            + Q[b, h, i, :] · R[b, i, j, :]) / sqrt(d).
+
+    R is shared across heads (one (head_dim,) vector per pair (i, j))
+    matching GeoTransformer's published formulation. The Q·R term is what
+    distinguishes Tier 3 from the simplified additive-logit-bias port we
+    used previously: here the geometric contribution is modulated by the
+    query content, so different queries can attend to different geometric
+    patterns instead of every query seeing the same scalar bias for a
+    given pair.
+
+    Mirrors nn.MultiheadAttention's call signature (seq-first tensors,
+    optional key_padding_mask) for drop-in replacement at the SA call site.
+    Cross-attention continues to use stock nn.MultiheadAttention because
+    the two point clouds live in different frames and a "relative" geometric
+    encoding between them isn't well-defined.
+    """
+
+    def __init__(self, d_model: int, nhead: int, dropout: float = 0.0):
+        super().__init__()
+        assert d_model % nhead == 0, (
+            f'd_model={d_model} must be divisible by nhead={nhead}')
+        self.d_model = d_model
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+        self.scale = self.head_dim ** -0.5
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(dropout)
+
+    def forward(self, query: Tensor, key: Tensor, value: Tensor,
+                key_padding_mask: Optional[Tensor] = None,
+                relation: Optional[Tensor] = None):
+        """
+        Args:
+          query, key, value: (N, B, d_model) — PyTorch seq-first convention.
+          key_padding_mask: (B, Nk) bool — True positions are masked out.
+          relation: optional (B, Nq, Nk, head_dim) — per-pair K-space
+            geometric embedding for the Q·R term. Shared across heads.
+
+        Returns:
+          out: (Nq, B, d_model)
+          attn_weights_avg: (B, Nq, Nk) attention weights averaged across
+            heads (matching nn.MultiheadAttention's return convention so
+            downstream `satt_weights` analysis code keeps working).
+        """
+        Nq, B, _ = query.shape
+        Nk = key.shape[0]
+
+        # Project & reshape to (B, H, N, D)
+        Q = self.q_proj(query).view(Nq, B, self.nhead, self.head_dim).permute(1, 2, 0, 3)
+        K = self.k_proj(key).view(Nk, B, self.nhead, self.head_dim).permute(1, 2, 0, 3)
+        V = self.v_proj(value).view(Nk, B, self.nhead, self.head_dim).permute(1, 2, 0, 3)
+
+        # Standard content-content logits
+        attn = torch.matmul(Q, K.transpose(-1, -2))  # (B, H, Nq, Nk)
+
+        # GeoTransformer Q·R term (what makes this Tier 3, not Tier 1).
+        if relation is not None:
+            # Q: (B, H, Nq, D); relation: (B, Nq, Nk, D); -> (B, H, Nq, Nk).
+            r_logits = torch.einsum('bhid,bijd->bhij', Q, relation)
+            attn = attn + r_logits
+
+        attn = attn * self.scale
+
+        if key_padding_mask is not None:
+            # Broadcast (B, Nk) -> (B, 1, 1, Nk).
+            attn = attn.masked_fill(
+                key_padding_mask[:, None, None, :], float('-inf'))
+
+        attn_weights = torch.softmax(attn, dim=-1)
+        # If a row is fully masked the softmax produces NaN; fix to zeros so
+        # the matmul below stays finite. (key_padding_mask covers a whole
+        # row when query position itself is padded — that row's output gets
+        # discarded downstream, but we still need finite values to avoid
+        # propagating NaN through layer norm.)
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        out = torch.matmul(attn_weights, V)  # (B, H, Nq, D)
+        out = out.permute(2, 0, 1, 3).contiguous().view(Nq, B, self.d_model)
+        out = self.out_proj(out)
+
+        return out, attn_weights.mean(dim=1)
+
+
 class TransformerCrossEncoder(nn.Module):
 
     def __init__(self, cross_encoder_layer, num_layers, norm=None, return_intermediate=False):
@@ -31,8 +128,8 @@ class TransformerCrossEncoder(nn.Module):
                 tgt_key_padding_mask: Optional[Tensor] = None,
                 src_pos: Optional[Tensor] = None,
                 tgt_pos: Optional[Tensor] = None,
-                src_sa_attn_bias: Optional[Tensor] = None,
-                tgt_sa_attn_bias: Optional[Tensor] = None,):
+                src_sa_relation: Optional[Tensor] = None,
+                tgt_sa_relation: Optional[Tensor] = None,):
 
         src_intermediate, tgt_intermediate = [], []
 
@@ -41,8 +138,8 @@ class TransformerCrossEncoder(nn.Module):
                              src_key_padding_mask=src_key_padding_mask,
                              tgt_key_padding_mask=tgt_key_padding_mask,
                              src_pos=src_pos, tgt_pos=tgt_pos,
-                             src_sa_attn_bias=src_sa_attn_bias,
-                             tgt_sa_attn_bias=tgt_sa_attn_bias)
+                             src_sa_relation=src_sa_relation,
+                             tgt_sa_relation=tgt_sa_relation)
             if self.return_intermediate:
                 src_intermediate.append(self.norm(src) if self.norm is not None else src)
                 tgt_intermediate.append(self.norm(tgt) if self.norm is not None else tgt)
@@ -94,9 +191,13 @@ class TransformerCrossEncoderLayer(nn.Module):
                  ):
         super().__init__()
 
-        # Self, cross attention layers
+        # Self-attention uses our custom GeometricMultiheadAttention so the
+        # encoder can consume the (B, Nq, Nk, head_dim) relational tensor
+        # produced by GeometricStructureEmbedding. Cross-attention stays as
+        # stock nn.MultiheadAttention because src and tgt live in different
+        # frames; relative geometry across the two clouds isn't well-defined.
         if attention_type == 'dot_prod':
-            self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+            self.self_attn = GeometricMultiheadAttention(d_model, nhead, dropout=dropout)
             self.multihead_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         else:
             raise NotImplementedError
@@ -129,27 +230,29 @@ class TransformerCrossEncoderLayer(nn.Module):
                      tgt_key_padding_mask: Optional[Tensor] = None,
                      src_pos: Optional[Tensor] = None,
                      tgt_pos: Optional[Tensor] = None,
-                     src_sa_attn_bias: Optional[Tensor] = None,
-                     tgt_sa_attn_bias: Optional[Tensor] = None,):
+                     src_sa_relation: Optional[Tensor] = None,
+                     tgt_sa_relation: Optional[Tensor] = None,):
 
         assert src_mask is None and tgt_mask is None, 'Masking not implemented'
 
-        # Self attention
+        # Self attention (Q·K + Q·R via GeometricMultiheadAttention)
         src_w_pos = self.with_pos_embed(src, src_pos)
         q = k = src_w_pos
-        src2, satt_weights_s = self.self_attn(q, k,
-                              value=src_w_pos if self.sa_val_has_pos_emb else src,
-                              attn_mask=src_sa_attn_bias if src_sa_attn_bias is not None else src_mask,
-                              key_padding_mask=src_key_padding_mask)
+        src2, satt_weights_s = self.self_attn(
+            q, k,
+            value=src_w_pos if self.sa_val_has_pos_emb else src,
+            key_padding_mask=src_key_padding_mask,
+            relation=src_sa_relation)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
         tgt_w_pos = self.with_pos_embed(tgt, tgt_pos)
         q = k = tgt_w_pos
-        tgt2, satt_weights_t = self.self_attn(q, k,
-                                              value=tgt_w_pos if self.sa_val_has_pos_emb else tgt,
-                                              attn_mask=tgt_sa_attn_bias if tgt_sa_attn_bias is not None else tgt_mask,
-                                              key_padding_mask=tgt_key_padding_mask)
+        tgt2, satt_weights_t = self.self_attn(
+            q, k,
+            value=tgt_w_pos if self.sa_val_has_pos_emb else tgt,
+            key_padding_mask=tgt_key_padding_mask,
+            relation=tgt_sa_relation)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
 
@@ -193,28 +296,30 @@ class TransformerCrossEncoderLayer(nn.Module):
                     tgt_key_padding_mask: Optional[Tensor] = None,
                     src_pos: Optional[Tensor] = None,
                     tgt_pos: Optional[Tensor] = None,
-                    src_sa_attn_bias: Optional[Tensor] = None,
-                    tgt_sa_attn_bias: Optional[Tensor] = None,):
+                    src_sa_relation: Optional[Tensor] = None,
+                    tgt_sa_relation: Optional[Tensor] = None,):
 
         assert src_mask is None and tgt_mask is None, 'Masking not implemented'
 
-        # Self attention
+        # Self attention (Q·K + Q·R via GeometricMultiheadAttention)
         src2 = self.norm1(src)
         src2_w_pos = self.with_pos_embed(src2, src_pos)
         q = k = src2_w_pos
-        src2, satt_weights_s = self.self_attn(q, k,
-                                              value=src2_w_pos if self.sa_val_has_pos_emb else src2,
-                                              attn_mask=src_sa_attn_bias if src_sa_attn_bias is not None else src_mask,
-                                              key_padding_mask=src_key_padding_mask)
+        src2, satt_weights_s = self.self_attn(
+            q, k,
+            value=src2_w_pos if self.sa_val_has_pos_emb else src2,
+            key_padding_mask=src_key_padding_mask,
+            relation=src_sa_relation)
         src = src + self.dropout1(src2)
 
         tgt2 = self.norm1(tgt)
         tgt2_w_pos = self.with_pos_embed(tgt2, tgt_pos)
         q = k = tgt2_w_pos
-        tgt2, satt_weights_t = self.self_attn(q, k,
-                                              value=tgt2_w_pos if self.sa_val_has_pos_emb else tgt2,
-                                              attn_mask=tgt_sa_attn_bias if tgt_sa_attn_bias is not None else tgt_mask,
-                                              key_padding_mask=tgt_key_padding_mask)
+        tgt2, satt_weights_t = self.self_attn(
+            q, k,
+            value=tgt2_w_pos if self.sa_val_has_pos_emb else tgt2,
+            key_padding_mask=tgt_key_padding_mask,
+            relation=tgt_sa_relation)
         tgt = tgt + self.dropout1(tgt2)
 
         # Cross attention
@@ -258,18 +363,18 @@ class TransformerCrossEncoderLayer(nn.Module):
                 tgt_key_padding_mask: Optional[Tensor] = None,
                 src_pos: Optional[Tensor] = None,
                 tgt_pos: Optional[Tensor] = None,
-                src_sa_attn_bias: Optional[Tensor] = None,
-                tgt_sa_attn_bias: Optional[Tensor] = None,):
+                src_sa_relation: Optional[Tensor] = None,
+                tgt_sa_relation: Optional[Tensor] = None,):
 
         if self.normalize_before:
             return self.forward_pre(src, tgt, src_mask, tgt_mask,
                                     src_key_padding_mask, tgt_key_padding_mask,
                                     src_pos, tgt_pos,
-                                    src_sa_attn_bias, tgt_sa_attn_bias)
+                                    src_sa_relation, tgt_sa_relation)
         return self.forward_post(src, tgt, src_mask, tgt_mask,
                                  src_key_padding_mask, tgt_key_padding_mask,
                                  src_pos, tgt_pos,
-                                 src_sa_attn_bias, tgt_sa_attn_bias)
+                                 src_sa_relation, tgt_sa_relation)
 
 
 def _get_clones(module, N):
