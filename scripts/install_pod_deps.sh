@@ -8,9 +8,10 @@ cd "$REPO_ROOT"
 
 ENV_NAME="${REGTR_ENV_NAME:-regtr}"
 PYTHON_VER="${REGTR_PYTHON:-3.10}"
-# Pin torch 2.4 + cu124 so official PyTorch3D wheels work (no torch 2.6 wheel from Meta).
+# Pin torch 2.4 + cu124 (matches prebuilt PyTorch3D wheel below).
 TORCH_INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu124}"
-PYTORCH3D_WHEEL_INDEX="${PYTORCH3D_WHEEL_INDEX:-https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu124_pyt240/download.html}"
+# Meta's fbaipublicfiles wheel index often returns AccessDenied on cloud pods; use a direct wheel.
+PYTORCH3D_WHEEL_URL="${PYTORCH3D_WHEEL_URL:-https://github.com/MiroPsota/torch_packages_builder/releases/download/pytorch3d-0.7.9/pytorch3d-0.7.9+pt2.4.0cu124-cp310-cp310-linux_x86_64.whl}"
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 if ! conda env list | grep -qE "^${ENV_NAME}[[:space:]]"; then
@@ -25,8 +26,8 @@ pip install torch==2.4.0 torchvision==0.19.0 --index-url "$TORCH_INDEX"
 echo "==> pip requirements (vtk>=9.2.4, etc.)"
 pip install -r src/requirements.txt
 
-echo "==> PyTorch3D"
-pip install pytorch3d -f "$PYTORCH3D_WHEEL_INDEX"
+echo "==> PyTorch3D (direct wheel; Meta CDN index often blocked on pods)"
+pip install "$PYTORCH3D_WHEEL_URL"
 
 python -c "
 import torch, pytorch3d

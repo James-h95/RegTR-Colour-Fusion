@@ -4,6 +4,7 @@ used for computing the losses in RegTR.
 import argparse
 import os
 import pickle
+import shutil
 import sys
 sys.path.append(os.getcwd())
 
@@ -24,6 +25,15 @@ parser.add_argument('--overlap_radius', type=float, default=0.0375,
 opt = parser.parse_args()
 
 
+def _load_xyz_fragment(path):
+    """Load a fragment; return xyz (N, 3) whether stored as (N,3) or (N,6)."""
+    raw = torch.load(path)
+    arr = raw.detach().cpu().numpy() if torch.is_tensor(raw) else np.asarray(raw)
+    if arr.ndim != 2 or arr.shape[1] < 3:
+        raise ValueError(f'{path}: expected (N,3) or (N,6), got {arr.shape}')
+    return arr[:, :3].astype(np.float32)
+
+
 def process(phase):
 
     with open(f'datasets/3dmatch/{phase}_info.pkl', 'rb') as fid:
@@ -39,8 +49,8 @@ def process(phase):
         tgt_path = infos['tgt'][item]
         pose = se3_init(infos['rot'][item], infos['trans'][item])  # transforms src to tgt
 
-        src_xyz = torch.load(os.path.join(opt.base_dir, src_path))
-        tgt_xyz = torch.load(os.path.join(opt.base_dir, tgt_path))
+        src_xyz = _load_xyz_fragment(os.path.join(opt.base_dir, src_path))
+        tgt_xyz = _load_xyz_fragment(os.path.join(opt.base_dir, tgt_path))
 
         src_mask, tgt_mask, src_tgt_corr = compute_overlap(
             se3_transform(pose, src_xyz),
@@ -54,7 +64,19 @@ def process(phase):
 
 
 if __name__ == '__main__':
-    process('train')
-    process('val')
-    process('test_3DMatch')
-    process('test_3DLoMatch')
+    phases = ['train', 'val', 'test_3DMatch', 'test_3DLoMatch']
+    # Color benchmarks use the same pair lists as 3DMatch / 3DLoMatch.
+    for color_phase, base_phase in [
+        ('test_Color3DMatch', 'test_3DMatch'),
+        ('test_Color3DLoMatch', 'test_3DLoMatch'),
+    ]:
+        if os.path.exists(f'datasets/3dmatch/{color_phase}_info.pkl'):
+            phases.append(color_phase)
+        elif os.path.exists(f'datasets/3dmatch/{base_phase}_info.pkl'):
+            shutil.copy(
+                f'datasets/3dmatch/{base_phase}_info.pkl',
+                f'datasets/3dmatch/{color_phase}_info.pkl',
+            )
+            phases.append(color_phase)
+    for phase in phases:
+        process(phase)
