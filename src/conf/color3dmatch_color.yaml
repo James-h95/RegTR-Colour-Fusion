@@ -22,9 +22,9 @@ dataset:
     color_source: auto
 
 train_options:
-    # Match color3dmatch_baseline.yaml (-15) for apples-to-apples Task 1 ablation.
-    # Use a longer niter (e.g. -25, -40) on convergence / thesis runs.
-    niter: -15
+    # 5-epoch diagnostic (matches full / relpos ablation cells for 2x2 table).
+    # Bump to -15+ for convergence / thesis runs.
+    niter: -5
 
 solver:
     optimizer: AdamW
